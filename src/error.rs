@@ -247,6 +247,7 @@ pub enum Ipv4Error {
 /// Errors encountered while parsing or validating TCP headers and options.
 #[derive(Debug, Error)]
 pub enum TcpHeaderError {
+    // Fixed header
     #[error("TCP segment is shorter than the minimum TCP header")]
     TruncatedHeader,
 
@@ -256,6 +257,20 @@ pub enum TcpHeaderError {
     #[error("TCP header length exceeds available segment data")]
     TruncatedSegment,
 
+    #[error("TCP segment length is invalid")]
+    InvalidSegmentLength,
+
+    // Reserved bits and flags
+    #[error("TCP reserved bits are nonzero")]
+    InvalidReservedBits,
+
+    #[error("TCP control flags contain an invalid combination")]
+    InvalidFlags,
+
+    #[error("TCP NS flag is invalid")]
+    InvalidNsFlag,
+
+    // Options
     #[error("TCP options are malformed")]
     MalformedOptions,
 
@@ -265,9 +280,51 @@ pub enum TcpHeaderError {
     #[error("TCP option exceeds the available header")]
     TruncatedOption,
 
-    #[error("TCP reserved bits are nonzero")]
-    InvalidReservedBits,
+    #[error("TCP option kind is unsupported: {0}")]
+    UnsupportedOption(u8),
 
-    #[error("TCP segment length is invalid")]
-    InvalidSegmentLength,
+    #[error("TCP option kind {kind} occurs more than once")]
+    DuplicateOption { kind: u8 },
+
+    #[error("TCP option {kind} has an invalid length: {length}")]
+    InvalidOptionLengthForKind { kind: u8, length: usize },
+
+    #[error("TCP option padding is invalid")]
+    InvalidOptionPadding,
+
+    #[error("TCP option is missing required data")]
+    MissingOptionData,
+
+    // Specific option validation
+    #[error("TCP Maximum Segment Size option has an invalid value: {0}")]
+    InvalidMss(u16),
+
+    #[error("TCP window scale option has an invalid shift count: {0}")]
+    InvalidWindowScale(u8),
+
+    #[error("TCP SACK option has an invalid block length")]
+    InvalidSackLength,
+
+    #[error("TCP timestamp option is malformed")]
+    InvalidTimestampOption,
+
+    // Segment semantics
+    #[error("TCP urgent pointer is invalid for this segment")]
+    InvalidUrgentPointer,
+
+    #[error("TCP checksum is invalid")]
+    InvalidChecksum,
+
+    #[error("TCP segment contains trailing data inconsistent with its header")]
+    InvalidPayloadOffset,
+
+    // Resource and parsing limits
+    #[error("TCP header exceeds the maximum permitted length: {0} bytes")]
+    HeaderTooLarge(usize),
+
+    #[error("TCP options exceed the maximum permitted length: {0} bytes")]
+    OptionsTooLarge(usize),
+
+    #[error("TCP header parsing encountered an unexpected end of input")]
+    UnexpectedEnd,
 }

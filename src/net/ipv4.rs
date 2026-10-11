@@ -40,6 +40,11 @@ pub struct Ipv4Header {
     pub ip_destination: [u8; 4],
 }
 
+const _: () = assert!(
+    core::mem::size_of::<Ipv4Header>() == 20,
+    "Ipv4Header must be 20-bytes"
+);
+
 impl Ipv4Header {
     pub fn serialize(_bytes: &[u8]) -> Result<Self, Ipv4Error> {
         unimplemented!()
