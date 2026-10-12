@@ -31,6 +31,7 @@ const _: () = assert!(
     "Tcp header must be 20-bytes"
 );
 
+// todo: avoid luck numbers
 impl TcpHeader {
     pub fn parse(bytes: &[u8]) -> Result<Self, TcpHeaderError> {
         if bytes.len() < 20 {
@@ -72,5 +73,24 @@ impl TcpHeader {
             checksum,
             urgent_pointer: urgent_ptr,
         })
+    }
+
+    #[inline]
+    pub const fn has_options(&self) -> bool {
+        (self.data_offset & 0xF0) >> 4 != 5
+    }
+
+    #[inline]
+    pub const fn offset(&self) -> u8 {
+        (self.data_offset & 0xF0) >> 4
+    }
+
+    #[inline]
+    pub const fn flags(&self) -> TcpFlags {
+        self.flags
+    }
+
+    pub fn checksum(&mut self) -> Result<(), TcpHeaderError> {
+        unimplemented!()
     }
 }
