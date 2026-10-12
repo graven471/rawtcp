@@ -1,7 +1,3 @@
-// todo: i don't quite like this having two ipv4 headers i think i will just use
-// Ipv4Header and add methods like version, ihl, flags, etc this keeps struct 20-bytes
-// while giving extra options
-
 use crate::error::Ipv4Error;
 
 use bytemuck::{Pod, Zeroable};
@@ -153,7 +149,7 @@ impl Ipv4Header {
         bytes[6..8].copy_from_slice(&self.flags_fragment_offset.to_be_bytes());
         bytes[8] = self.ttl;
         bytes[9] = self.protocol;
-        // Checksum bytes 10..12 remain zero.
+        // Checksum bytes 10..12 remain zero
         bytes[12..16].copy_from_slice(&self.ip_source);
         bytes[16..20].copy_from_slice(&self.ip_destination);
 

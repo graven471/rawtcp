@@ -31,7 +31,6 @@ const _: () = assert!(
     "Tcp header must be 20-bytes"
 );
 
-// todo: avoid luck numbers
 impl TcpHeader {
     pub fn parse(bytes: &[u8]) -> Result<Self, TcpHeaderError> {
         if bytes.len() < 20 {

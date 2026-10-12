@@ -1,7 +1,11 @@
 #![allow(unused)]
 use std::net::Ipv4Addr;
 
-use crate::{error::Error, net::ipv4::Ipv4Header, wire::tcp_header::TcpHeader};
+use crate::{
+    error::Error,
+    net::ipv4::{IpProtocol, Ipv4Header},
+    wire::{tcp_header::TcpHeader, utils::checksum_sum},
+};
 
 // neovim tips:
 // rX -> replace character under cursor with X
@@ -45,6 +49,18 @@ impl<'p> TcpSegment<'p> {
         ip_source: Ipv4Addr,
         ip_dst: Ipv4Addr,
     ) -> Result<(), Error> {
+        let tcp_len =
+            (((self.header.offset() * 4) as u32) + self.payload.len() as u32).to_be_bytes();
+
+        let mut sum = 0;
+
+        sum += checksum_sum(&ip_source.octets());
+        sum += checksum_sum(&ip_dst.octets());
+        // zero + ip protocol
+        sum += checksum_sum(&[0, IpProtocol::Tcp as u8]);
+        sum += checksum_sum(&tcp_len);
+        // header and payload
+
         unimplemented!()
     }
 }
