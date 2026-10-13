@@ -2,7 +2,7 @@
 use std::net::Ipv4Addr;
 
 use crate::{
-    error::Error,
+    error::{Error, TcpHeaderError},
     net::ipv4::{IpProtocol, Ipv4Header},
     wire::{tcp_header::TcpHeader, utils::checksum_sum},
 };
@@ -22,6 +22,14 @@ impl<'p> TcpSegment<'p> {
         let header_len = ipv4.header_len() as usize;
         let total_len = ipv4.total_length() as usize;
 
+        if bytes.len() < header_len || total_len < header_len {
+            return Err(Error::TruncatedPacket(bytes.len()));
+        }
+
+        if total_len > bytes.len() {
+            return Err(Error::TruncatedPacket(bytes.len()));
+        }
+
         let tcp_bytes = &bytes[header_len..total_len];
 
         let header = TcpHeader::parse(tcp_bytes)?;
@@ -32,6 +40,11 @@ impl<'p> TcpSegment<'p> {
 
         // parse payload
         let tcp_header_len = header.offset() as usize * 4;
+
+        if tcp_header_len > tcp_bytes.len() {
+            return Err(Error::TcpHeader(TcpHeaderError::TruncatedHeader));
+        }
+
         let payload = &tcp_bytes[tcp_header_len..];
 
         if payload.is_empty() {
@@ -44,13 +57,10 @@ impl<'p> TcpSegment<'p> {
         Ok(Self { header, payload })
     }
 
-    pub fn calculate_checksum(
-        &mut self,
-        ip_source: Ipv4Addr,
-        ip_dst: Ipv4Addr,
-    ) -> Result<(), Error> {
-        let tcp_len =
-            (((self.header.offset() * 4) as u32) + self.payload.len() as u32).to_be_bytes();
+    pub fn calculate_checksum(&mut self, ip_source: Ipv4Addr, ip_dst: Ipv4Addr) -> u16 {
+        let tcp_len = (self.header.offset() as usize * 4 + self.payload.len()) as u16;
+
+        let tcp_len = tcp_len.to_be_bytes();
 
         let mut sum = 0;
 
@@ -59,8 +69,21 @@ impl<'p> TcpSegment<'p> {
         // zero + ip protocol
         sum += checksum_sum(&[0, IpProtocol::Tcp as u8]);
         sum += checksum_sum(&tcp_len);
-        // header and payload
+        self.header.set_checksum(0);
+        sum += checksum_sum(bytemuck::bytes_of(&self.header));
 
-        unimplemented!()
+        if !self.payload.is_empty() {
+            sum += checksum_sum(self.payload);
+        }
+
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+
+        let checksum = !(sum as u16);
+
+        self.header.set_checksum(checksum);
+
+        checksum
     }
 }

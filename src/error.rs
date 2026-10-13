@@ -83,6 +83,9 @@ pub enum Error {
     #[error("connection reset by peer")]
     ConnectionReset,
 
+    #[error("Invalid packet size: {0}")]
+    TruncatedPacket(usize),
+
     #[error("connection timed out")]
     ConnectionTimedOut,
 
