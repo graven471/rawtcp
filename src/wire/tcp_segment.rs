@@ -1,4 +1,3 @@
-#![allow(unused)]
 use std::net::Ipv4Addr;
 
 use crate::{
@@ -22,11 +21,8 @@ impl<'p> TcpSegment<'p> {
         let header_len = ipv4.header_len() as usize;
         let total_len = ipv4.total_length() as usize;
 
-        if bytes.len() < header_len || total_len < header_len {
-            return Err(Error::TruncatedPacket(bytes.len()));
-        }
-
-        if total_len > bytes.len() {
+        // bound check
+        if bytes.len() < header_len || total_len < header_len || total_len > bytes.len() {
             return Err(Error::TruncatedPacket(bytes.len()));
         }
 
@@ -57,19 +53,19 @@ impl<'p> TcpSegment<'p> {
         Ok(Self { header, payload })
     }
 
+    #[inline]
     pub fn calculate_checksum(&mut self, ip_source: Ipv4Addr, ip_dst: Ipv4Addr) -> u16 {
-        let tcp_len = (self.header.offset() as usize * 4 + self.payload.len()) as u16;
-
-        let tcp_len = tcp_len.to_be_bytes();
+        self.header.set_checksum(0);
+        let tcp_len =
+            ((self.header.offset() as usize * 4 + self.payload.len()) as u16).to_be_bytes();
 
         let mut sum = 0;
 
+        // todo: benchmark this
         sum += checksum_sum(&ip_source.octets());
         sum += checksum_sum(&ip_dst.octets());
-        // zero + ip protocol
         sum += checksum_sum(&[0, IpProtocol::Tcp as u8]);
         sum += checksum_sum(&tcp_len);
-        self.header.set_checksum(0);
         sum += checksum_sum(bytemuck::bytes_of(&self.header));
 
         if !self.payload.is_empty() {

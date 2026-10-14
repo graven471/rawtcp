@@ -134,6 +134,7 @@ impl Ipv4Header {
     }
 
     pub fn serialize(_bytes: &[u8]) -> Result<Self, Ipv4Error> {
+        // serialize the bytes into Self, do validatation etc
         unimplemented!()
     }
 
@@ -153,6 +154,8 @@ impl Ipv4Header {
         bytes[12..16].copy_from_slice(&self.ip_source);
         bytes[16..20].copy_from_slice(&self.ip_destination);
 
+        // note: since Self is 20-bytes and 20 is not odd so this will not panic
+        // in current scenario
         let sum: u32 = bytes
             .chunks_exact(2)
             .map(|b| u16::from_be_bytes([b[0], b[1]]) as u32)
