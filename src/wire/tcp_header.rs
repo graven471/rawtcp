@@ -34,6 +34,19 @@ const _: () = assert!(
 );
 
 impl TcpHeader {
+    pub fn new(src_port: u16, dst_port: u16, seq_num: u32, ack_num: u32, flags: TcpFlags) -> Self {
+        Self {
+            src_port: src_port.to_be(),
+            dst_port: dst_port.to_be(),
+            seq_number: seq_num.to_be(),
+            ack_number: ack_num.to_be(),
+            data_offset: 0,
+            flags: flags.bits(),
+            window_size: 0,
+            checksum: 0,
+            urgent_pointer: 0,
+        }
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self, TcpHeaderError> {
         if bytes.len() < 20 {
             return Err(TcpHeaderError::TruncatedHeader);
@@ -74,26 +87,32 @@ impl TcpHeader {
         })
     }
 
+    #[inline]
     pub fn set_src_port(&mut self, port: u16) {
         self.src_port = port.to_be();
     }
 
+    #[inline]
     pub fn set_dst_port(&mut self, port: u16) {
         self.dst_port = port.to_be();
     }
 
+    #[inline]
     pub fn set_seq_number(&mut self, seq_num: u32) {
         self.seq_number = seq_num.to_be();
     }
 
+    #[inline]
     pub fn set_ack_number(&mut self, ack_num: u32) {
         self.ack_number = ack_num.to_be();
     }
 
+    #[inline]
     pub fn set_window(&mut self, win: u16) {
         self.window_size = win.to_be();
     }
 
+    #[inline]
     pub fn set_checksum(&mut self, checksum: u16) {
         self.checksum = checksum.to_be();
     }
@@ -113,26 +132,52 @@ impl TcpHeader {
         TcpFlags::from_bits_truncate(self.flags)
     }
 
+    #[inline]
     pub const fn src_port(&self) -> u16 {
         u16::from_be(self.src_port)
     }
 
+    #[inline]
+    pub const fn syn(&self) -> bool {
+        TcpFlags::from_bits_truncate(self.flags).contains(TcpFlags::Syn)
+    }
+
+    #[inline]
+    pub const fn ack(&self) -> bool {
+        TcpFlags::from_bits_truncate(self.flags).contains(TcpFlags::Ack)
+    }
+
+    #[inline]
+    pub const fn rst(&self) -> bool {
+        TcpFlags::from_bits_truncate(self.flags).contains(TcpFlags::Rst)
+    }
+
+    #[inline]
+    pub const fn fin(&self) -> bool {
+        TcpFlags::from_bits_truncate(self.flags).contains(TcpFlags::Fin)
+    }
+
+    #[inline]
     pub const fn dst_port(&self) -> u16 {
         u16::from_be(self.dst_port)
     }
 
+    #[inline]
     pub const fn seq_number(&self) -> u32 {
         u32::from_be(self.seq_number)
     }
 
+    #[inline]
     pub const fn ack_number(&self) -> u32 {
         u32::from_be(self.ack_number)
     }
 
+    #[inline]
     pub const fn window_size(&self) -> u16 {
         u16::from_be(self.window_size)
     }
 
+    #[inline]
     pub fn checksum(&self) -> u16 {
         u16::from_be(self.checksum)
     }

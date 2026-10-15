@@ -19,6 +19,7 @@ pub(crate) struct TcpStack {
 impl TcpStack {
     // we are the client
     pub(crate) fn connect(remote: SocketAddr) {
+        // create a new connection send SYN and call connection.process
         unimplemented!()
     }
 

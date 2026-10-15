@@ -11,12 +11,17 @@ use crate::{
 // cw -> delete the character and puts in insert mode
 // ciwHello -> replace the entire word with Hello
 
+#[derive(Debug, Clone)]
 pub struct TcpSegment<'p> {
     pub header: TcpHeader,
     pub payload: &'p [u8],
 }
 
 impl<'p> TcpSegment<'p> {
+    pub fn new(header: TcpHeader, payload: &'p [u8]) -> Self {
+        Self { header, payload }
+    }
+
     pub fn parse(ipv4: &Ipv4Header, bytes: &'p [u8]) -> Result<Self, Error> {
         let header_len = ipv4.header_len() as usize;
         let total_len = ipv4.total_length() as usize;
@@ -81,5 +86,9 @@ impl<'p> TcpSegment<'p> {
         self.header.set_checksum(checksum);
 
         checksum
+    }
+
+    pub(crate) fn deserialize(&self) {
+        todo!()
     }
 }

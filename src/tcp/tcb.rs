@@ -1,13 +1,22 @@
 #![allow(unused)]
 use std::{collections::HashMap, net::Ipv4Addr};
 
-use rand::RngExt;
+use rand::{RngExt, rngs::ThreadRng};
 
 use crate::{
     error::Error,
-    tcp::state::TcpState::{self, Established, SynReceived, SynSent},
-    wire::{tcp_header::TcpFlags, tcp_segment::TcpSegment},
+    tcp::state::TcpState::{self, Closed, Established, SynReceived, SynSent},
+    wire::{
+        tcp_header::{TcpFlags, TcpHeader},
+        tcp_segment::TcpSegment,
+    },
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenKind {
+    Passive,
+    Active,
+}
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TcbKey {
@@ -27,13 +36,14 @@ pub(crate) struct Tcb {
     pub(crate) src_port: u16,
     pub(crate) dst_port: u16,
 
+    // temp: remove when we have isn formula
+    rand: ThreadRng,
+
     // snd_una.......snd_nxt, where ... is in-flight data
     //    1         2          3          4
     // ----------|----------|----------|----------
     //        SND.UNA    SND.NXT    SND.UNA
     //                              +SND.WND
-    // the seq. number of oldest byte sent but not my acknowledged
-    // confirmed up to here
     pub(crate) snd_una: u32,
     // the next seq. number that will be assigned to the next byte
     // of new data sent
@@ -56,12 +66,14 @@ pub(crate) struct Tcb {
 
 impl Tcb {
     pub(crate) fn new(key: &TcbKey, iss: u32) -> Self {
+        // todo: remote{addr,port} will change based on active or passive connection
         Self {
             state: TcpState::Closed,
             src_addr: key.remote_addr,
             src_port: key.remote_port,
             dst_addr: key.local_addr,
             dst_port: key.local_port,
+            rand: rand::rng(),
             iss,
             irs: 0,
             rcv_nxt: 0,
@@ -76,9 +88,90 @@ impl Tcb {
         }
     }
 
+    #[inline]
+    const fn is_valid_ack(&self, ack: u32) -> bool {
+        // ack must be between [snd_una, snd_nxt] closed interval
+        self.snd_una <= ack && ack <= self.snd_nxt
+    }
+
+    #[inline]
+    const fn is_valid_syn_sent_ack(&self, ack: u32) -> bool {
+        // (self.iss, snd_nxt] interval
+        self.iss < ack && ack <= self.snd_nxt
+    }
+
+    #[inline]
+    fn seg_len(seg: &TcpSegment) -> u32 {
+        // both syn and fin consumes 1-byte
+        seg.payload.len() as u32 + u32::from(seg.header.syn()) + u32::from(seg.header.fin())
+    }
+
+    #[inline]
+    fn is_segment_acceptable(&self, seg: &TcpSegment) -> bool {
+        let seg_len = Self::seg_len(seg);
+
+        match (seg_len, self.rcv_nxt) {
+            (0, 0) => {
+                return seg.header.seq_number() == self.rcv_nxt;
+            }
+
+            (0, 1..) => {
+                // test -> RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+                // seg.seq is >= rcv_nxt and seg.seq < rcv_nxt + rcv_wnd
+                return seg.header.seq_number() >= self.rcv_nxt
+                    && seg.header.seq_number() < self.rcv_nxt + u32::from(self.rcv_wnd);
+            }
+
+            (1.., 0) => {
+                // not acceptable
+                // but RFC says:
+                // If the RCV.WND is zero, no segments will be acceptable,
+                // but special allowance should be made to accept valid ACKs, URGs, and RSTs.
+                return false;
+            }
+
+            (1.., 1..) => {
+                // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+                // or
+                // RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+                // seg.seq + seg.len - 1 >= rcv_nxt and seg.seq + seg.len - 1 < rcv_nxt + rcv_wnd
+
+                let rcv_wnd = u32::from(self.rcv_wnd);
+
+                let first_seq_in_window = seg.header.seq_number() >= self.rcv_nxt
+                    && seg.header.seq_number() < self.rcv_nxt + rcv_wnd;
+
+                // todo: make sure to replace seq_number with SeqNumber when i have it
+                let last_seq_in_segment = seg.header.seq_number() + seg_len - 1;
+
+                let last_seq_in_window = last_seq_in_segment >= self.rcv_nxt
+                    && last_seq_in_segment < self.rcv_nxt + rcv_wnd;
+
+                return first_seq_in_window | last_seq_in_window;
+            }
+        }
+
+        todo!()
+    }
+
     #[must_use]
     pub(crate) fn process(&mut self, seg: TcpSegment) -> Result<TcpSegment<'_>, Error> {
         let flags = seg.header.flags();
+
+        // for state: SYN-RECEIVED | ESTABLISHED | FIN-WAIT-1 | FIN-WAIT-2 | CLOSE-WAIT
+        // CLOSING | LAST-ACK | TIME-WAIT
+        // do the following before processing:
+        // call is_segment_acceptable
+        // true -> go ahead and do stuffs
+        // false -> RST -> drop the seg and return else send ACK with seq = snd_nxt, ack = rcv_nxt
+
+        // If the RST bit is set and the sequence number exactly matches the next expected sequence number (RCV.NXT),
+        // then TCP endpoints MUST reset the connection in the manner prescribed below according to the connection state.
+
+        //  If the RST bit is set and the sequence number does not exactly match the next expected sequence value,
+        //  yet is within the current receive window, TCP endpoints MUST send an acknowledgment (challenge ACK):
+        //  After sending the challenge ACK, TCP endpoints MUST drop the unacceptable segment
+        //  and stop processing the incoming packet further.
 
         match self.state {
             SynSent => {
@@ -87,19 +180,121 @@ impl Tcb {
                 // here we are waiting for peer SYN | ACK we have to validate
                 // peer ack = snd_nxt
                 // and then we will send ACK, ack = peer seq. + 1
-                // and update snd_nxt = + 1 ?
-                self.state = Established;
+
+                match (seg.header.syn(), seg.header.ack(), seg.header.rst()) {
+                    // we have syn, ack and rst
+                    (true, true, true) => {
+                        // if seg.ack < iss or seg.ack > snd_nxt then drop the
+                        // segment without sending a reset because RST flag is already set
+                        if (self.is_valid_syn_sent_ack(seg.header.ack_number())) {
+                            // this is a connection reset: report connection reset
+                            // transition to Closed, delete TCB and return
+                            self.state = Closed;
+                        } else {
+                            // drop the connection do not sent RST
+                        }
+
+                        todo!()
+                    }
+
+                    (true, true, false) => {
+                        if self.is_valid_syn_sent_ack(seg.header.ack_number()) {
+                            // send the ACK of seg.header.seq + 1
+                        } else {
+                            // send RST
+                        }
+                        todo!()
+                    }
+                    (true, false, true) => {
+                        // we have syn and rst
+                        // discard the segment stay in synSent
+                        todo!()
+                    }
+
+                    (true, false, false) => {
+                        self.irs = seg.header.seq_number();
+                        self.rcv_nxt = seg.header.seq_number() + 1;
+
+                        self.state = SynReceived;
+                        // send syn | ack
+                    }
+                    (false, false, true) => {
+                        // rst without ack in synSent what should i do
+                    }
+                    (false, false, false) => {
+                        // lol
+                    }
+
+                    // for now
+                    _ => unreachable!(),
+                }
             }
             SynReceived => {
                 // this happens when we send SYN | ACK and waiting for peer ACK seg.
-                // validate peer ack = snd_nxt and then we transition state to Established
-                self.state = Established;
+
+                if !self.is_segment_acceptable(&seg) {
+                    if seg.header.rst() {
+                        // drop the seg and return
+                    } else {
+                        // send ack
+                        // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                        // here outgoing seq_num = snd_nxt, ack_num = rcv_nxt flag = ACK
+                    }
+                }
+
+                // if RST bit is set, if this connection was initiated with passive open
+                // i.e, came from Listen state then return this connection to LISTEN state
+                // and return. The user need to be informed
+
+                //  If this connection was initiated with an active OPEN (i.e., came from SYN-SENT state),
+                //  then the connection was refused; signal the user "connection refused".
+                //  In either case, the retransmission queue should be flushed.
+                //  And in the active OPEN case, enter the CLOSED state and delete the TCB, and return.
+
+                if seg.header.rst() {
+                    // handle passive and active
+                }
+
+                // if SYN bit is set:
+                if seg.header.syn() {
+                    // If the connection was initiated with a passive OPEN,
+                    // then return this connection to the LISTEN state and return. Otherwise,
+                    // handle per the directions for synchronized states below.
+                }
+
+                // If SND.UNA < SEG.ACK =< SND.NXT, then enter ESTABLISHED state and continue processing
+                //  with the variables below set to:
+                // snd_wnd <- seg.wnd
+                // snd_wl1 <- seg.seq
+                // snd_wl2 <- seg.ack
+
+                //  If the segment acknowledgment is not acceptable, form a reset segment
+                // send RST <SEQ=SEG.ACK><CTL=RST>
+
+                if self.is_valid_ack(seg.header.ack_number()) {
+                    // update variables
+                    self.state = Established;
+                } else {
+                    // send RST
+                }
             }
             Established => {
+                // note: first check sequence number
                 // 3WHS is completed now we can send and receive payload
+                // If SND.UNA < SEG.ACK =< SND.NXT, then set SND.UNA <- SEG.ACK
+                // Any segments on the retransmission queue that are thereby entirely acknowledged are removed
+
+                //  If the ACK is a duplicate (SEG.ACK =< SND.UNA), it can be ignored.
+                //  If the ACK acks something not yet sent (SEG.ACK > SND.NXT),
+                //  then send an ACK, drop the segment, and return
+
+                //  If SND.UNA =< SEG.ACK =< SND.NXT, the send window should be updated.
+                //  If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and SND.WL2 =< SEG.ACK)),
+                //  set SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK
                 todo!()
             }
             TcpState::Listen => {
+                // note: first check sequence number
                 if flags.contains(TcpFlags::Syn) && !flags.contains(TcpFlags::Ack) {
                     // here we are the client the peer sent the SYN we have to
                     // create our own initial seq. number ack the peer syn and
@@ -107,13 +302,33 @@ impl Tcb {
                     // transition state to SynReceived
                 }
             }
-            TcpState::FinWait1 => todo!(),
-            TcpState::FinWait2 => todo!(),
-            TcpState::CloseWait => todo!(),
-            TcpState::Closing => todo!(),
-            TcpState::LastAck => todo!(),
-            TcpState::TimeWait => todo!(),
-            TcpState::Closed => todo!(),
+            TcpState::FinWait1 => {
+                // note: first check sequence number
+            }
+            TcpState::FinWait2 => {
+                // note: first check sequence number
+            }
+            TcpState::CloseWait => {
+                // note: first check sequence number
+                //  If the RST bit is set, then any outstanding RECEIVEs and SEND should receive "reset" responses.
+                //  All segment queues should be flushed. Users should also receive
+                //  an unsolicited general "connection reset" signal.
+                //  Enter the CLOSED state, delete the TCB, and return.
+            }
+            TcpState::Closing => {
+                // note: first check sequence number
+            }
+            TcpState::LastAck => {
+                // note: first check sequence number
+            }
+            TcpState::TimeWait => {
+                // note: first check sequence number
+                //  If the RST bit is set, then enter the CLOSED state, delete the TCB, and return.
+                // if the ACK bit is off, drop the segment and return
+            }
+            TcpState::Closed => {
+                // we can enjoy some cookie here
+            }
         }
 
         unimplemented!()
