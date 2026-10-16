@@ -5,7 +5,7 @@ use rand::{RngExt, rngs::ThreadRng};
 
 use crate::{
     error::Error,
-    tcp::state::TcpState::{self, Closed, Established, SynReceived, SynSent},
+    tcp::state::TcpState::{self, CloseWait, Closed, Established, SynReceived, SynSent},
     wire::{
         tcp_header::{TcpFlags, TcpHeader},
         tcp_segment::TcpSegment,
@@ -17,6 +17,14 @@ use crate::{
 pub(crate) enum OpenKind {
     Passive,
     Active,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentAction {
+    Drop,
+    SendAck,
+    Reset,
+    Continue,
 }
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +125,7 @@ impl Tcb {
 
     #[inline]
     fn is_ack_acceptable(&self, ack_num: u32) -> bool {
-        //  mitigation check:
+        //  RFC 5961 mitigation check:
         //  ACK value is acceptable only if it is in the range of
         //  ((SND.UNA - MAX.SND.WND) =< SEG.ACK =< SND.NXT)
         //  All incoming segments whose ACK value doesn't satisfy the above condition
@@ -170,8 +178,6 @@ impl Tcb {
                 return first_seq_in_window | last_seq_in_window;
             }
         }
-
-        todo!()
     }
 
     /// RFC 9293 state machine
@@ -179,23 +185,6 @@ impl Tcb {
     pub(crate) fn process(&mut self, seg: TcpSegment) -> Result<TcpSegment<'_>, Error> {
         let flags = seg.header.flags();
 
-        // TODO:
-        // after ACK validation (RFC check 5)
-        // RFC check 6: do URG bit check in state (Established, FinWait{1, 2}, CloseWait, Closing, LastAck, TimeWait)
-        // RFC check 7: process the segment text in state (Established, FinWait{1, 2}, CloseWait, Closing, LastAck, TimeWait)
-        // RFC check 8: FIN bit (do not process it in Closed, Listen or SynSent)
-
-        // If the FIN bit is set, signal the user "connection closing" and return
-        //  any pending RECEIVEs with same message, advance RCV.NXT over the FIN,
-        //  and send an acknowledgment for the FIN.
-        // for SynReceived and Established: Enter The CloseWait state
-        // for FinWait1: if our FIN has been ACKed (perhaps in this segment), then enter TIME-WAIT,
-        // start the time-wait timer, turn off the other timers; otherwise, enter the CLOSING state.
-        // for FinWait2:  Enter the TIME-WAIT state. Start the time-wait timer, turn off the other timers.
-        // for CloseWait: Remain in the CloseWait state
-        // for Closing: Remain in the Closing state
-        // for LastAck: Remain in the LastAck
-        // for TimeWait: Remain in the TIME-WAIT state. Restart the 2 MSL time-wait timeout
         match self.state {
             SynSent => {
                 // this happens when we initiated the connection, `connect()` it will
@@ -262,68 +251,73 @@ impl Tcb {
                     seg.header.syn(),
                     ack_valid,
                 ) {
-                    // all invalid segment cases where RST is not set
-                    (false, false, true, true)
-                    | (false, false, false, true)
-                    | (false, false, true, false)
-                    | (false, false, false, false) => {
+                    // seg is invalid and rst is set
+                    (false, true, _, _) => {
+                        // drop the segment silently and return
+                    }
+
+                    // seg is invalid and rst is not set
+                    (false, false, _, _) => {
                         // send  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> then drop the unacceptable segment and return
                     }
 
-                    // all invalid segment case where RST is set
-                    (false, true, true, true)
-                    | (false, true, true, false)
-                    | (false, true, false, true)
-                    | (false, true, false, false) => {
-                        // drop the segment and return
-                    }
-
-                    // seg is valid RST is set
-                    (true, true, true, true)
-                    | (true, true, true, false)
-                    | (true, true, false, true)
-                    | (true, true, false, false) => {
-                        // reset the connection according to `for this state`
+                    // seg is valid and rst is set
+                    (true, true, _, _) => {
+                        // If this connection was initiated with a passive OPEN (i.e., came from the LISTEN state),
+                        //  then return this connection to LISTEN state and return. The user need not be informed.
+                        //  If this connection was initiated with an active OPEN (i.e., came from SYN-SENT state),
+                        //  then the connection was refused; signal the user "connection refused".
+                        //  In either case, the retransmission queue should be flushed. And in the active OPEN case,
+                        //  enter the CLOSED state and delete the TCB, and return.
                         if seg.header.seq_number() == self.rcv_nxt {
                             // if open kind is passive came from Listen then
                             // return this connection to listen state and return or if
                             // its active open came from SYN-SENT then the connection was refused
                             // signal the user "connection refused" delete the TCB and return
                         } else {
-                            // send  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                            // and drop the unacceptable segment and stop processing incoming packet further
-                        }
-
-                        // If this connection was initiated with a passive OPEN (i.e., came from the LISTEN state), then return this connection to LISTEN state and return. The user need not be informed. If this connection was initiated with an active OPEN (i.e., came from SYN-SENT state), then the connection was refused; signal the user "connection refused". In either case, the retransmission queue should be flushed. And in the active OPEN case, enter the CLOSED state and delete the TCB, and return.
-                        if (self.open_kind == OpenKind::Passive) {
-                        } else {
-                        }
-                    }
-
-                    // seg is valid, rst is not set, syn is set ack is valid or invalid
-                    // _ is wildcard here it catches true and false both for ack
-                    (true, false, true, _) => {
-                        if (self.open_kind == OpenKind::Passive) {
-                            //return this connection to the LISTEN state and return.
-                        } else {
                             // send <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                            // drop the unacceptable segment and stop processing further.
                         }
                     }
 
-                    // seg is valid, RST is false SYN is false, ACK is true
-                    (true, false, false, true) => {
-                        if !self.is_ack_acceptable(seg.header.ack_number()) {
-                            // send <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> then discard the seg stop processing
+                    // seg is valid and RST is not set
+                    (true, false, _, _) => {
+                        // check syn bit
+                        if seg.header.syn() {
+                            // If the connection was initiated with a passive OPEN,
+                            //  then return this connection to the LISTEN state and return.
+                            // else  send  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> and drop the seg return
                         }
 
+                        // check 5: ACK
+                        if !seg.header.ack() {
+                            // drop the segment and return
+                        }
+
+                        // RFC 5961 mitigation check
+                        if !self.is_ack_acceptable(seg.header.ack_number()) {
+                            // send ACK then discard the seg stop processing
+                        }
+
+                        if !self.is_valid_ack(seg.header.ack_number()) {
+                            // send  <SEQ=SEG.ACK><CTL=RST>
+                            // todo: find out does RFC allows to drop the seg and return
+                            // or we just need to send rst
+                        }
+
+                        // note: is_valid_ack already checked SND.UNA < SEG.ACK =< SND.NXT
+                        // so we can update these freely
                         self.snd_wnd = seg.header.window_size();
                         self.snd_wl1 = seg.header.seq_number();
                         self.snd_wl2 = seg.header.ack_number();
                         self.state = Established;
-                    }
-                    (true, false, false, false) => {
-                        // send  <SEQ=SEG.ACK><CTL=RST>
+
+                        // check 8: FIN
+                        if seg.header.fin() {
+                            // signal the user "connection closing" and return any pending RECEIVEs with same message,
+                            //  advance RCV.NXT over the FIN, and send an acknowledgment for the FIN.
+                            // enter the close wait state
+                            self.state = CloseWait;
+                        }
                     }
                 }
             }
