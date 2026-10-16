@@ -87,8 +87,4 @@ impl<'p> TcpSegment<'p> {
 
         checksum
     }
-
-    pub(crate) fn deserialize(&self) {
-        todo!()
-    }
 }
