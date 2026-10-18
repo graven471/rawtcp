@@ -3,6 +3,8 @@ use std::{collections::HashMap, net::Ipv4Addr, ptr::addr_of};
 
 use rand::{RngExt, rngs::ThreadRng};
 
+use crate::tcp::seq::SequenceNumber;
+
 use crate::{
     error::Error,
     tcp::state::TcpState::{
@@ -60,28 +62,28 @@ pub(crate) struct Tcb {
     // ----------|----------|----------|----------
     //        SND.UNA    SND.NXT    SND.UNA
     //                              +SND.WND
-    pub(crate) snd_una: u32,
+    pub(crate) snd_una: SequenceNumber,
     // the next seq. number that will be assigned to the next byte
     // of new data sent
     // sent up to here (but maybe not confirmed yet)
     // advances when sequence-space data is sent
-    pub(crate) snd_nxt: u32,
+    pub(crate) snd_nxt: SequenceNumber,
     pub(crate) snd_wnd: u16,
     pub(crate) snd_up: u16,
-    pub(crate) snd_wl1: u32,
-    pub(crate) snd_wl2: u32,
-    pub(crate) iss: u32,
+    pub(crate) snd_wl1: SequenceNumber,
+    pub(crate) snd_wl2: SequenceNumber,
+    pub(crate) iss: SequenceNumber,
 
     // seq. number of the next byte i am expecting to receive
     // this is what we will put in ack. number we reply
-    pub(crate) rcv_nxt: u32,
+    pub(crate) rcv_nxt: SequenceNumber,
     pub(crate) rcv_wnd: u16,
     pub(crate) rcv_up: u16,
-    pub(crate) irs: u32,
+    pub(crate) irs: SequenceNumber,
 }
 
 impl Tcb {
-    pub(crate) fn new(key: &TcbKey, iss: u32) -> Self {
+    pub(crate) fn new(key: &TcbKey, iss: SequenceNumber) -> Self {
         // todo: remote{addr,port} will change based on active or passive connection
         Self {
             state: TcpState::Closed,
@@ -94,27 +96,27 @@ impl Tcb {
             // todo: see if we can use different value
             max_snd_wnd: u16::MAX,
             iss,
-            irs: 0,
-            rcv_nxt: 0,
+            irs: SequenceNumber(0),
+            rcv_nxt: SequenceNumber(0),
             rcv_up: 0,
             rcv_wnd: 0,
-            snd_nxt: 0,
-            snd_una: 0,
+            snd_nxt: SequenceNumber(0),
+            snd_una: SequenceNumber(0),
             snd_up: 0,
-            snd_wl1: 0,
-            snd_wl2: 0,
+            snd_wl1: SequenceNumber(0),
+            snd_wl2: SequenceNumber(0),
             snd_wnd: 0,
         }
     }
 
     #[inline]
-    const fn is_valid_ack(&self, ack: u32) -> bool {
+    fn is_valid_ack(&self, ack: SequenceNumber) -> bool {
         // ack must be between (snd_una, snd_nxt] closed interval
         self.snd_una < ack && ack <= self.snd_nxt
     }
 
     #[inline]
-    const fn is_valid_syn_sent_ack(&self, ack: u32) -> bool {
+    fn is_valid_syn_sent_ack(&self, ack: SequenceNumber) -> bool {
         // (self.iss, snd_nxt] interval
         self.iss < ack && ack <= self.snd_nxt
     }
@@ -126,13 +128,13 @@ impl Tcb {
     }
 
     #[inline]
-    fn is_ack_acceptable(&self, ack_num: u32) -> bool {
+    fn is_ack_acceptable(&self, ack_num: SequenceNumber) -> bool {
         //  RFC 5961 mitigation check:
         //  ACK value is acceptable only if it is in the range of
         //  ((SND.UNA - MAX.SND.WND) =< SEG.ACK =< SND.NXT)
         //  All incoming segments whose ACK value doesn't satisfy the above condition
         //  MUST be discarded and an ACK sent back.
-        return (self.snd_una.wrapping_sub(u32::from(self.max_snd_wnd)) <= ack_num)
+        return SequenceNumber(self.snd_una.0.wrapping_sub(u32::from(self.max_snd_wnd))) <= ack_num
             && ack_num <= self.snd_nxt;
     }
 
@@ -140,16 +142,17 @@ impl Tcb {
     fn is_segment_acceptable(&self, seg: &TcpSegment) -> bool {
         let seg_len = Self::seg_len(seg);
 
-        match (seg_len, self.rcv_nxt) {
+        match (seg_len, self.rcv_nxt.0) {
             (0, 0) => {
-                return seg.header.seq_number() == self.rcv_nxt;
+                return SequenceNumber(seg.header.seq_number()) == self.rcv_nxt;
             }
 
             (0, 1..) => {
                 // test -> RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                 // seg.seq is >= rcv_nxt and seg.seq < rcv_nxt + rcv_wnd
-                return seg.header.seq_number() >= self.rcv_nxt
-                    && seg.header.seq_number() < self.rcv_nxt + u32::from(self.rcv_wnd);
+                return SequenceNumber(seg.header.seq_number()) >= self.rcv_nxt
+                    && SequenceNumber(seg.header.seq_number())
+                        < self.rcv_nxt + u32::from(self.rcv_wnd);
             }
 
             (1.., 0) => {
@@ -168,11 +171,11 @@ impl Tcb {
 
                 let rcv_wnd = u32::from(self.rcv_wnd);
 
-                let first_seq_in_window = seg.header.seq_number() >= self.rcv_nxt
-                    && seg.header.seq_number() < self.rcv_nxt + rcv_wnd;
+                let first_seq_in_window = SequenceNumber(seg.header.seq_number()) >= self.rcv_nxt
+                    && SequenceNumber(seg.header.seq_number()) < self.rcv_nxt + rcv_wnd;
 
                 // todo: make sure to replace seq_number with SeqNumber when i have it
-                let last_seq_in_segment = seg.header.seq_number() + seg_len - 1;
+                let last_seq_in_segment = SequenceNumber(seg.header.seq_number()) + (seg_len - 1);
 
                 let last_seq_in_window = last_seq_in_segment >= self.rcv_nxt
                     && last_seq_in_segment < self.rcv_nxt + rcv_wnd;
@@ -183,38 +186,43 @@ impl Tcb {
     }
 
     #[must_use]
-    fn build_segment(&self, seq_num: u32, ack_num: u32, flags: TcpFlags) -> TcpSegment<'_> {
-        let header = TcpHeader::new(self.src_port, self.dst_port, seq_num, ack_num, flags);
+    fn build_segment(
+        &self,
+        seq_num: SequenceNumber,
+        ack_num: SequenceNumber,
+        flags: TcpFlags,
+    ) -> TcpSegment<'_> {
+        let header = TcpHeader::new(self.src_port, self.dst_port, seq_num.0, ack_num.0, flags);
         TcpSegment::new(header, &[])
     }
 
     #[must_use]
     #[inline]
-    fn send_syn(&self, seq_num: u32) -> TcpSegment<'_> {
-        self.build_segment(seq_num, 0, TcpFlags::Syn)
+    fn send_syn(&self, seq_num: SequenceNumber) -> TcpSegment<'_> {
+        self.build_segment(seq_num, SequenceNumber(0), TcpFlags::Syn)
     }
 
     #[must_use]
     #[inline]
-    fn send_ack(&self, seq_num: u32, ack_num: u32) -> TcpSegment<'_> {
+    fn send_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
         self.build_segment(seq_num, ack_num, TcpFlags::Ack)
     }
 
     #[must_use]
     #[inline]
-    fn send_syn_ack(&self, seq_num: u32, ack_num: u32) -> TcpSegment<'_> {
+    fn send_syn_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
         self.build_segment(seq_num, ack_num, TcpFlags::Syn | TcpFlags::Ack)
     }
 
     #[must_use]
     #[inline]
-    fn send_rst(&self, seq_num: u32) -> TcpSegment<'_> {
-        self.build_segment(seq_num, 0, TcpFlags::Rst)
+    fn send_rst(&self, seq_num: SequenceNumber) -> TcpSegment<'_> {
+        self.build_segment(seq_num, SequenceNumber(0), TcpFlags::Rst)
     }
 
     #[must_use]
     #[inline]
-    fn send_fin(&self, seq_num: u32, ack_num: u32) -> TcpSegment<'_> {
+    fn send_fin(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
         self.build_segment(seq_num, ack_num, TcpFlags::Fin)
     }
 
@@ -230,25 +238,30 @@ impl Tcb {
 
     #[inline]
     fn process_ack(&mut self, seg: &TcpSegment<'_>) -> SegmentAction {
-        if (seg.header.ack_number() <= self.snd_una) {
+        // mitigation check
+        if (!self.is_ack_acceptable(SequenceNumber(seg.header.ack_number()))) {
+            return SegmentAction::SendAck;
+        }
+
+        if (SequenceNumber(seg.header.ack_number()) <= self.snd_una) {
             return SegmentAction::Drop;
         }
 
-        if (seg.header.ack_number() > self.snd_nxt) {
+        if (SequenceNumber(seg.header.ack_number()) > self.snd_nxt) {
             return SegmentAction::SendAck;
         }
 
         // advance snd_una
-        self.snd_una = seg.header.ack_number();
+        self.snd_una = SequenceNumber(seg.header.ack_number());
         // todo: Any segments on the retransmission queue that are thereby entirely acknowledged are removed.
 
-        let wl_updated_needed =
-            self.snd_wl1 == seg.header.seq_number() && self.snd_wl2 <= seg.header.ack_number();
+        let wl_updated_needed = self.snd_wl1 == SequenceNumber(seg.header.seq_number())
+            && self.snd_wl2 <= SequenceNumber(seg.header.ack_number());
 
-        if self.snd_wl1 < seg.header.seq_number() || wl_updated_needed {
+        if self.snd_wl1 < SequenceNumber(seg.header.seq_number()) || wl_updated_needed {
             self.snd_wnd = seg.header.window_size();
-            self.snd_wl1 = seg.header.seq_number();
-            self.snd_wl2 = seg.header.ack_number();
+            self.snd_wl1 = SequenceNumber(seg.header.seq_number());
+            self.snd_wl2 = SequenceNumber(seg.header.ack_number());
         };
 
         return SegmentAction::Continue;
@@ -269,61 +282,85 @@ impl Tcb {
 
     #[must_use]
     fn handle_syn_sent(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
-        match (seg.header.syn(), seg.header.ack(), seg.header.rst()) {
-            // we have syn, ack and rst
-            (true, true, true) => {
-                // if seg.ack < iss or seg.ack > snd_nxt then drop the
-                // segment without sending a reset because RST flag is already set
-                if (self.is_valid_syn_sent_ack(seg.header.ack_number())) {
-                    // this is a connection reset: report connection reset
-                    // transition to Closed, delete TCB and return
-                    self.state = Closed;
-                } else {
-                    // drop the connection do not sent RST
-                }
+        let seg_ack = SequenceNumber(seg.header.ack_number());
+        let seg_seq = SequenceNumber(seg.header.seq_number());
+        // todo: i don't quite like the current implementation maybe i should refactor
 
-                todo!()
+        if !seg.header.ack() {
+            if seg.header.rst() {
+                return None;
             }
 
-            (true, true, false) => {
-                if self.is_valid_syn_sent_ack(seg.header.ack_number()) {
-                    // send the ACK of seg.header.seq + 1
-                } else {
-                    // send RST
-                }
-                todo!()
-            }
-            (true, false, true) => {
-                // we have syn and rst
-                // discard the segment stay in synSent
-                todo!()
+            if !seg.header.rst() && !seg.header.syn() {
+                return None;
             }
 
-            (true, false, false) => {
-                self.irs = seg.header.seq_number();
-                self.rcv_nxt = seg.header.seq_number() + 1;
+            self.rcv_nxt = seg_seq + 1;
+            self.irs = seg_seq;
 
-                self.state = SynReceived;
-                // send syn | ack
-            }
-            (false, false, true) => {
-                // rst without ack in synSent what should i do
-            }
-            (false, false, false) => {
-                // lol
+            if self.snd_una > self.iss {
+                self.state = Established;
+                return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
             }
 
-            // for now
-            _ => unreachable!(),
+            self.state = SynReceived;
+            self.snd_wnd = seg.header.window_size();
+            self.snd_wl1 = seg_seq;
+            self.snd_wl2 = seg_ack;
+
+            return Some(self.send_syn_ack(self.iss, self.rcv_nxt));
         }
 
-        todo!()
+        // ack is set
+        if !self.is_valid_syn_sent_ack(seg_ack) {
+            if seg.header.rst() {
+                return None;
+            } else {
+                return Some(self.send_rst(seg_ack));
+            }
+        }
+
+        let ack_valid = self.is_valid_ack(seg_ack);
+
+        if seg.header.rst() {
+            if seg_seq == self.rcv_nxt && ack_valid {
+                // todo: signal "error: connection reset"
+                // delete the TLB
+                self.state = Closed;
+                return None;
+            } else {
+                return None;
+            }
+        }
+
+        // only reach when ACK is ok or there is no ACK
+        if seg.header.syn() && ack_valid {
+            self.rcv_nxt = seg_seq + 1;
+            self.irs = seg_seq;
+            self.snd_una = seg_ack;
+
+            // todo: any segments on the retransmission queue that are thereby acknowledged should be removed.
+
+            if self.snd_una > self.iss {
+                self.state = Established;
+                return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
+            }
+
+            self.state = SynReceived;
+            self.snd_wnd = seg.header.window_size();
+            self.snd_wl1 = seg_seq;
+            self.snd_wl2 = seg_ack;
+
+            return Some(self.send_syn_ack(self.iss, self.rcv_nxt));
+        }
+
+        return None;
     }
 
     #[must_use]
     fn handle_syn_received(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
         let segment_acceptable = self.is_segment_acceptable(&seg);
-        let ack_valid = self.is_valid_ack(seg.header.ack_number());
+        let ack_valid = self.is_valid_ack(SequenceNumber(seg.header.ack_number()));
 
         match (
             segment_acceptable,
@@ -345,7 +382,7 @@ impl Tcb {
             // seg is valid and rst is set
             (true, true, _, _) => {
                 // 5961 mitigation check
-                if seg.header.seq_number() == self.rcv_nxt {
+                if SequenceNumber(seg.header.seq_number()) == self.rcv_nxt {
                     // if open kind is passive came from Listen then
                     // return this connection to listen state and return or if
                     // its active open came from SYN-SENT then the connection was refused
@@ -381,17 +418,17 @@ impl Tcb {
                 }
 
                 // RFC 5961 mitigation check
-                if !self.is_ack_acceptable(seg.header.ack_number()) {
+                if !self.is_ack_acceptable(SequenceNumber(seg.header.ack_number())) {
                     return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
 
-                if !self.is_valid_ack(seg.header.ack_number()) {
-                    return Some(self.send_rst(seg.header.ack_number()));
+                if !self.is_valid_ack(SequenceNumber(seg.header.ack_number())) {
+                    return Some(self.send_rst(SequenceNumber(seg.header.ack_number())));
                 }
 
                 self.snd_wnd = seg.header.window_size();
-                self.snd_wl1 = seg.header.seq_number();
-                self.snd_wl2 = seg.header.ack_number();
+                self.snd_wl1 = SequenceNumber(seg.header.seq_number());
+                self.snd_wl2 = SequenceNumber(seg.header.ack_number());
                 self.state = Established;
 
                 // check 8: FIN
@@ -414,7 +451,7 @@ impl Tcb {
         }
 
         if seg.header.rst() {
-            if seg.header.seq_number() == self.rcv_nxt {
+            if SequenceNumber(seg.header.seq_number()) == self.rcv_nxt {
                 //  If the RST bit is set, then any outstanding RECEIVEs and SEND
                 //  should receive "reset" responses. All segment queues should be flushed.
                 //  Users should also receive an unsolicited general "connection reset" signal.
@@ -433,11 +470,6 @@ impl Tcb {
         // check 5
         if !seg.header.ack() {
             return None;
-        }
-
-        // mitigation check
-        if (!self.is_ack_acceptable(seg.header.ack_number())) {
-            return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
         }
 
         // todo: check 7 process the segment text
@@ -465,7 +497,7 @@ impl Tcb {
         }
 
         if seg.header.rst() {
-            if seg.header.seq_number() == self.rcv_nxt {
+            if SequenceNumber(seg.header.seq_number()) == self.rcv_nxt {
                 // todo: any outstanding RECEIVEs and SEND should receive "reset" responses.
                 //  All segment queues should be flushed. Users should also receive
                 //  an unsolicited general "connection reset" signal.
@@ -485,7 +517,7 @@ impl Tcb {
             return None;
         }
 
-        if !self.is_ack_acceptable(seg.header.ack_number()) {
+        if !self.is_ack_acceptable(SequenceNumber(seg.header.ack_number())) {
             return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
         }
 
@@ -510,7 +542,7 @@ impl Tcb {
             //  start the time-wait timer, turn off the other timers; otherwise, enter the CLOSING state.
         }
 
-        todo!()
+        None
     }
 
     #[must_use]
@@ -557,5 +589,144 @@ impl Tcb {
                 // we can enjoy some cookie here
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod state_machine_tests {
+    use super::*;
+
+    use std::{
+        net::Ipv4Addr,
+        panic::{AssertUnwindSafe, catch_unwind},
+    };
+
+    fn make_tcb(state: TcpState) -> Tcb {
+        let key = TcbKey {
+            local_addr: Ipv4Addr::new(10, 0, 0, 1),
+            local_port: 8080,
+            remote_addr: Ipv4Addr::new(10, 0, 0, 2),
+            remote_port: 50000,
+        };
+
+        let mut tcb = Tcb::new(&key, SequenceNumber(100));
+        tcb.state = state;
+        tcb.snd_una = SequenceNumber(100);
+        tcb.snd_nxt = SequenceNumber(101);
+        tcb.rcv_nxt = SequenceNumber(200);
+        tcb.rcv_wnd = 100;
+        tcb.snd_wnd = 4096;
+        tcb.max_snd_wnd = u16::MAX;
+
+        tcb
+    }
+
+    fn segment(seq: u32, ack: u32, flags: TcpFlags) -> TcpSegment<'static> {
+        let header = TcpHeader::new(50000, 8080, seq, ack, flags);
+        TcpSegment::new(header, &[])
+    }
+
+    #[test]
+    fn established_to_closed_on_in_window_rst() {
+        let mut tcb = make_tcb(TcpState::Established);
+        let seg = segment(200, 0, TcpFlags::Rst);
+
+        let response = tcb.process(seg);
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::Closed);
+    }
+
+    #[test]
+    fn syn_sent_drops_acceptable_ack_without_syn_or_rst() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(200, 101, TcpFlags::Ack);
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        assert_eq!(tcb.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn established_sends_ack_for_rst_with_wrong_sequence() {
+        let mut tcb = make_tcb(TcpState::Established);
+        let seg = segment(201, 0, TcpFlags::Rst);
+
+        let response = tcb.process(seg).expect("expected ACK response");
+
+        let is_ack = response.header.ack();
+        let seq = response.header.seq_number();
+        let ack = response.header.ack_number();
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::Established);
+        assert!(is_ack);
+        assert_eq!(seq, 101);
+        assert_eq!(ack, 200);
+    }
+
+    #[test]
+    fn fin_wait1_to_fin_wait2_when_fin_is_acknowledged() {
+        let mut tcb = make_tcb(TcpState::FinWait1);
+        let seg = segment(200, 101, TcpFlags::Ack);
+
+        let response = tcb.process(seg);
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::FinWait2);
+        assert_eq!(tcb.snd_una, SequenceNumber(101));
+    }
+
+    #[test]
+    fn syn_sent_to_syn_received_on_syn_without_ack() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 0, TcpFlags::Syn);
+
+        let response = tcb.process(seg).expect("expected SYN-ACK response");
+
+        assert!(response.header.syn());
+        assert!(response.header.ack());
+        assert_eq!(response.header.seq_number(), 100);
+        assert_eq!(response.header.ack_number(), 901);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+        assert_eq!(tcb.irs, SequenceNumber(900));
+        assert_eq!(tcb.rcv_nxt, SequenceNumber(901));
+    }
+
+    #[test]
+    fn syn_received_to_established_on_valid_ack() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+
+        // Valid ACK: snd_una < ACK <= snd_nxt.
+        let mut header = TcpHeader::new(50000, 8080, 200, 101, TcpFlags::Ack);
+        header.set_window(4096);
+        let seg = TcpSegment::new(header, &[]);
+
+        // The current handler changes state, then reaches todo!().
+        let result = catch_unwind(AssertUnwindSafe(|| tcb.process(seg)));
+
+        assert!(result.is_err(), "current handler is unfinished");
+        assert_eq!(tcb.state, TcpState::Established);
+        assert_eq!(tcb.snd_wnd, 4096);
+    }
+
+    #[test]
+    fn syn_received_to_close_wait_when_valid_ack_also_has_fin() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 101, TcpFlags::Ack | TcpFlags::Fin);
+
+        // The current handler changes state to Established and then CloseWait,
+        // before reaching todo!().
+        let result = catch_unwind(AssertUnwindSafe(|| tcb.process(seg)));
+
+        assert!(result.is_err(), "current handler is unfinished");
+        assert_eq!(tcb.state, TcpState::CloseWait);
     }
 }

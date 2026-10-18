@@ -59,3 +59,12 @@ impl PartialOrd for SequenceNumber {
         self.gt(other) || self.0 == other.0
     }
 }
+
+impl std::ops::Add<u32> for SequenceNumber {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: u32) -> Self::Output {
+        self.wrapping_add(rhs)
+    }
+}

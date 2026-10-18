@@ -7,7 +7,10 @@ use std::{
 
 use crate::{
     net::ipv4::Ipv4Header,
-    tcp::tcb::{Tcb, TcbKey},
+    tcp::{
+        seq::SequenceNumber,
+        tcb::{Tcb, TcbKey},
+    },
     wire::tcp_segment::TcpSegment,
 };
 
@@ -40,7 +43,7 @@ impl TcpStack {
         if let Some(tcb) = self.connections.get_mut(&key) {
             tcb.process(seg);
         } else {
-            let conn = Tcb::new(&key, 0);
+            let conn = Tcb::new(&key, SequenceNumber(0));
             self.connections.insert(key, conn);
             let mut conn = self.connections.get_mut(&key).unwrap();
             conn.process(seg);
