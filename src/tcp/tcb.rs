@@ -1,12 +1,11 @@
-#![allow(unused)]
-use std::{collections::HashMap, net::Ipv4Addr, ptr::addr_of};
+#[allow(unused)]
+use std::net::Ipv4Addr;
 
-use rand::{RngExt, rngs::ThreadRng};
+use rand::rngs::ThreadRng;
 
 use crate::tcp::seq::SequenceNumber;
 
 use crate::{
-    error::Error,
     tcp::state::TcpState::{
         self, CloseWait, Closed, Established, FinWait2, Listen, SynReceived, SynSent,
     },
@@ -27,7 +26,7 @@ pub(crate) enum OpenKind {
 enum SegmentAction {
     Drop,
     SendAck,
-    Reset,
+    SendRst,
     Continue,
 }
 
@@ -248,7 +247,7 @@ impl Tcb {
         }
 
         if (SequenceNumber(seg.header.ack_number()) > self.snd_nxt) {
-            return SegmentAction::SendAck;
+            return SegmentAction::SendRst;
         }
 
         // advance snd_una
@@ -361,6 +360,8 @@ impl Tcb {
     fn handle_syn_received(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
         let segment_acceptable = self.is_segment_acceptable(&seg);
         let ack_valid = self.is_valid_ack(SequenceNumber(seg.header.ack_number()));
+        let seg_ack = SequenceNumber(seg.header.ack_number());
+        let seg_seq = SequenceNumber(seg.header.seq_number());
 
         match (
             segment_acceptable,
@@ -370,7 +371,6 @@ impl Tcb {
         ) {
             // seg is invalid and rst is set
             (false, true, _, _) => {
-                // drop the segment silently and return
                 return None;
             }
 
@@ -383,19 +383,16 @@ impl Tcb {
             (true, true, _, _) => {
                 // 5961 mitigation check
                 if SequenceNumber(seg.header.seq_number()) == self.rcv_nxt {
-                    // if open kind is passive came from Listen then
-                    // return this connection to listen state and return or if
-                    // its active open came from SYN-SENT then the connection was refused
-                    // signal the user "connection refused" delete the TCB and return
-
                     if self.open_kind == OpenKind::Passive {
                         self.state = Listen;
                         return None;
-                    } else {
-                        // todo i have to handle how to send "connection refused"
-                        return None;
                     }
+                    // active-open i.e. came from Syn-Sent
+                    // todo: i have to handle how to send "connection refused"
+                    self.state = Closed;
+                    return None;
                 } else {
+                    // challenge ACK
                     return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
             }
@@ -417,31 +414,40 @@ impl Tcb {
                     return None;
                 }
 
-                // RFC 5961 mitigation check
-                if !self.is_ack_acceptable(SequenceNumber(seg.header.ack_number())) {
+                if !self.is_ack_acceptable(seg_ack) {
                     return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
 
-                if !self.is_valid_ack(SequenceNumber(seg.header.ack_number())) {
-                    return Some(self.send_rst(SequenceNumber(seg.header.ack_number())));
+                if !self.is_valid_ack(seg_ack) {
+                    return Some(self.send_rst(seg_ack));
                 }
 
+                self.state = Established;
+                // advance snd_una
+                self.snd_una = SequenceNumber(seg.header.ack_number());
                 self.snd_wnd = seg.header.window_size();
                 self.snd_wl1 = SequenceNumber(seg.header.seq_number());
                 self.snd_wl2 = SequenceNumber(seg.header.ack_number());
-                self.state = Established;
 
                 // check 8: FIN
                 if seg.header.fin() {
                     // signal the user "connection closing" and return any pending RECEIVEs with same message,
                     //  advance RCV.NXT over the FIN, and send an acknowledgment for the FIN.
                     // enter the close wait state
+
+                    // fin consumes a sequence-space
+                    self.rcv_nxt = self.rcv_nxt + 1;
                     self.state = CloseWait;
+                    return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
 
-                todo!()
+                return None;
             }
+
+            _ => unreachable!(),
         }
+
+        return None;
     }
 
     #[must_use]
@@ -621,6 +627,17 @@ mod state_machine_tests {
         tcb
     }
 
+    fn segment_with_window(
+        seq: u32,
+        ack: u32,
+        flags: TcpFlags,
+        window: u16,
+    ) -> TcpSegment<'static> {
+        let mut header = TcpHeader::new(50000, 8080, seq, ack, flags);
+        header.set_window(window);
+        TcpSegment::new(header, &[])
+    }
+
     fn segment(seq: u32, ack: u32, flags: TcpFlags) -> TcpSegment<'static> {
         let header = TcpHeader::new(50000, 8080, seq, ack, flags);
         TcpSegment::new(header, &[])
@@ -703,30 +720,107 @@ mod state_machine_tests {
     #[test]
     fn syn_received_to_established_on_valid_ack() {
         let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment_with_window(200, 101, TcpFlags::Ack, 4096);
 
-        // Valid ACK: snd_una < ACK <= snd_nxt.
-        let mut header = TcpHeader::new(50000, 8080, 200, 101, TcpFlags::Ack);
-        header.set_window(4096);
-        let seg = TcpSegment::new(header, &[]);
+        let response = tcb.process(seg);
+        drop(response);
 
-        // The current handler changes state, then reaches todo!().
-        let result = catch_unwind(AssertUnwindSafe(|| tcb.process(seg)));
-
-        assert!(result.is_err(), "current handler is unfinished");
         assert_eq!(tcb.state, TcpState::Established);
+        assert_eq!(tcb.snd_una, SequenceNumber(101));
         assert_eq!(tcb.snd_wnd, 4096);
     }
 
     #[test]
     fn syn_received_to_close_wait_when_valid_ack_also_has_fin() {
         let mut tcb = make_tcb(TcpState::SynReceived);
-        let seg = segment(200, 101, TcpFlags::Ack | TcpFlags::Fin);
+        let seg = segment_with_window(200, 101, TcpFlags::Ack | TcpFlags::Fin, 4096);
 
-        // The current handler changes state to Established and then CloseWait,
-        // before reaching todo!().
-        let result = catch_unwind(AssertUnwindSafe(|| tcb.process(seg)));
+        let response = tcb.process(seg);
+        drop(response);
 
-        assert!(result.is_err(), "current handler is unfinished");
         assert_eq!(tcb.state, TcpState::CloseWait);
+        assert_eq!(tcb.snd_una, SequenceNumber(101));
+        assert_eq!(tcb.rcv_nxt, SequenceNumber(201));
+    }
+
+    #[test]
+    fn syn_received_drops_segment_without_ack() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 0, TcpFlags::empty());
+
+        let response = tcb.process(seg);
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+    }
+
+    #[test]
+    fn syn_received_rejects_ack_equal_to_iss() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 100, TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected RST response");
+
+        assert!(response.header.rst());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+        assert_eq!(tcb.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_received_discards_ack_beyond_snd_nxt() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 102, TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected ACK response");
+
+        assert!(response.header.ack());
+        assert!(!response.header.rst());
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+        assert_eq!(tcb.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_received_accepts_rst_with_in_window_sequence() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 0, TcpFlags::Rst);
+
+        let response = tcb.process(seg);
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::Closed);
+    }
+
+    #[test]
+    fn syn_received_drops_rst_with_sequence_outside_window() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(500, 0, TcpFlags::Rst);
+
+        let response = tcb.process(seg);
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+    }
+
+    #[test]
+    fn syn_received_handles_unexpected_syn() {
+        let mut tcb = make_tcb(TcpState::SynReceived);
+        let seg = segment(200, 0, TcpFlags::Syn);
+
+        let response = tcb.process(seg).expect("expected ACK response");
+
+        assert!(response.header.ack());
+        assert_eq!(response.header.seq_number(), 101);
+        assert_eq!(response.header.ack_number(), 200);
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
     }
 }
