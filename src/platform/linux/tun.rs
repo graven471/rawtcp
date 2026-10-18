@@ -15,6 +15,7 @@ pub struct DeviceOptions<'a> {
 
 pub struct Device {
     handle: Tun,
+    addr: Ipv4Addr,
     pub state: DeviceState,
 }
 
@@ -32,6 +33,7 @@ impl Device {
 
         Ok(Self {
             handle,
+            addr,
             state: DeviceState::Down,
         })
     }
@@ -48,6 +50,7 @@ impl Device {
 
         Ok(Self {
             handle,
+            addr: options.addr,
             state: DeviceState::Down,
         })
     }
@@ -55,6 +58,11 @@ impl Device {
     #[inline]
     pub fn fd(&self) -> i32 {
         self.handle.as_raw_fd()
+    }
+
+    #[inline]
+    pub fn address(&self) -> Ipv4Addr {
+        self.addr
     }
 
     #[inline]

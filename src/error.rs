@@ -128,6 +128,9 @@ pub enum Error {
     #[error("send side has been closed")]
     SendClosed,
 
+    #[error("connection error: {0}")]
+    Connection(#[from] ConnectionError),
+
     // --------------------------------------------------
     // Resources
     // --------------------------------------------------
@@ -330,4 +333,194 @@ pub enum TcpHeaderError {
 
     #[error("TCP header parsing encountered an unexpected end of input")]
     UnexpectedEnd,
+}
+
+use std::net::SocketAddr;
+
+/// Errors produced by TCP connection establishment, lifecycle management,
+/// listening, accepting, and endpoint operations.
+#[derive(Debug, Error)]
+pub enum ConnectionError {
+    // --------------------------------------------------
+    // Connection establishment
+    // --------------------------------------------------
+    #[error("connection attempt to {remote} failed")]
+    ConnectFailed { remote: SocketAddr },
+
+    #[error("connection attempt to {remote} timed out after {timeout_ms} ms")]
+    ConnectTimedOut { remote: SocketAddr, timeout_ms: u64 },
+
+    #[error("connection attempt to {remote} was refused")]
+    ConnectionRefused { remote: SocketAddr },
+
+    #[error("connection attempt to {remote} was aborted")]
+    ConnectionAborted { remote: SocketAddr },
+
+    #[error("connection to {remote} is already in progress")]
+    ConnectionInProgress { remote: SocketAddr },
+
+    #[error("connection to {remote} already exists")]
+    AlreadyConnected { remote: SocketAddr },
+
+    #[error("connection to {remote} is not established")]
+    NotConnected { remote: SocketAddr },
+
+    #[error("connection to {remote} was reset by the peer")]
+    ConnectionReset { remote: SocketAddr },
+
+    #[error("connection to {remote} was closed by the peer")]
+    PeerClosed { remote: SocketAddr },
+
+    // --------------------------------------------------
+    // TCP handshake
+    // --------------------------------------------------
+    #[error("invalid TCP handshake state: {0}")]
+    InvalidHandshakeState(&'static str),
+
+    #[error("unexpected TCP segment during handshake: {0}")]
+    UnexpectedHandshakeSegment(&'static str),
+
+    #[error("TCP handshake timed out waiting for {expected}")]
+    HandshakeTimedOut { expected: &'static str },
+
+    #[error("TCP handshake received an invalid acknowledgment")]
+    InvalidAcknowledgment,
+
+    #[error("TCP handshake sequence numbers are inconsistent")]
+    InvalidSequenceNumbers,
+
+    #[error("TCP handshake was rejected by the peer")]
+    HandshakeRejected,
+
+    #[error("TCP handshake retransmission limit exceeded")]
+    HandshakeRetryLimitExceeded,
+
+    #[error("TCP handshake was interrupted by connection teardown")]
+    HandshakeInterrupted,
+
+    // --------------------------------------------------
+    // Listening and accepting
+    // --------------------------------------------------
+    #[error("cannot listen on {local}: address is already in use")]
+    AddressInUse { local: SocketAddr },
+
+    #[error("cannot listen on {local}: address is not available")]
+    AddressNotAvailable { local: SocketAddr },
+
+    #[error("no listener matches {local}")]
+    ListenerNotFound { local: SocketAddr },
+
+    #[error("a listener already exists on {local}")]
+    ListenerAlreadyExists { local: SocketAddr },
+
+    #[error("listener on {local} is closed")]
+    ListenerClosed { local: SocketAddr },
+
+    #[error("listener backlog is full")]
+    BacklogFull,
+
+    #[error("accept operation would block")]
+    AcceptWouldBlock,
+
+    #[error("accept operation timed out after {timeout_ms} ms")]
+    AcceptTimedOut { timeout_ms: u64 },
+
+    #[error("accept operation was cancelled")]
+    AcceptCancelled,
+
+    // --------------------------------------------------
+    // Endpoint and connection state
+    // --------------------------------------------------
+    #[error("invalid connection state: expected {expected}, found {actual}")]
+    InvalidState {
+        expected: &'static str,
+        actual: &'static str,
+    },
+
+    #[error("connection is closing")]
+    ConnectionClosing,
+
+    #[error("connection is already closed")]
+    ConnectionClosed,
+
+    #[error("connection is not in the established state")]
+    NotEstablished,
+
+    #[error("connection is in the TIME_WAIT state")]
+    TimeWait,
+
+    #[error("connection teardown is already in progress")]
+    TeardownInProgress,
+
+    #[error("connection teardown timed out")]
+    TeardownTimedOut,
+
+    #[error("connection was aborted locally")]
+    LocallyAborted,
+
+    // --------------------------------------------------
+    // Address and port allocation
+    // --------------------------------------------------
+    #[error("invalid local endpoint: {0}")]
+    InvalidLocalEndpoint(&'static str),
+
+    #[error("invalid remote endpoint: {0}")]
+    InvalidRemoteEndpoint(&'static str),
+
+    #[error("no local ephemeral port is available")]
+    NoAvailablePort,
+
+    #[error("local port {port} is already allocated")]
+    PortInUse { port: u16 },
+
+    #[error("connection tuple already exists: {local} -> {remote}")]
+    DuplicateConnectionTuple {
+        local: SocketAddr,
+        remote: SocketAddr,
+    },
+
+    #[error("connection tuple is not registered: {local} -> {remote}")]
+    UnknownConnectionTuple {
+        local: SocketAddr,
+        remote: SocketAddr,
+    },
+
+    // --------------------------------------------------
+    // Resource limits
+    // --------------------------------------------------
+    #[error("maximum concurrent connection count reached: {limit}")]
+    ConnectionLimitReached { limit: usize },
+
+    #[error("connection table capacity exhausted")]
+    ConnectionTableFull,
+
+    #[error("connection backlog capacity exhausted: {limit}")]
+    BacklogLimitReached { limit: usize },
+
+    #[error("connection resource allocation failed: {resource}")]
+    ResourceAllocationFailed { resource: &'static str },
+
+    // --------------------------------------------------
+    // Cancellation and concurrency
+    // --------------------------------------------------
+    #[error("connection operation was cancelled")]
+    OperationCancelled,
+
+    #[error("connection operation timed out")]
+    OperationTimedOut,
+
+    #[error("connection operation is already in progress")]
+    OperationInProgress,
+
+    #[error("connection was concurrently modified")]
+    ConcurrentModification,
+
+    #[error("connection lock was poisoned")]
+    LockPoisoned,
+
+    // --------------------------------------------------
+    // Internal failures
+    // --------------------------------------------------
+    #[error("connection invariant violated: {0}")]
+    InternalInvariant(&'static str),
 }

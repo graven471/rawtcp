@@ -58,6 +58,11 @@ impl<'p> TcpSegment<'p> {
         Ok(Self { header, payload })
     }
 
+    pub fn emit(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(bytemuck::bytes_of(&self.header));
+        buf.extend_from_slice(self.payload);
+    }
+
     #[inline]
     pub fn calculate_checksum(&mut self, ip_source: Ipv4Addr, ip_dst: Ipv4Addr) -> u16 {
         self.header.set_checksum(0);

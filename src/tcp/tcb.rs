@@ -1,4 +1,4 @@
-#[allow(unused)]
+#![allow(unused)]
 use std::net::Ipv4Addr;
 
 use rand::rngs::ThreadRng;
@@ -6,9 +6,7 @@ use rand::rngs::ThreadRng;
 use crate::tcp::seq::SequenceNumber;
 
 use crate::{
-    tcp::state::TcpState::{
-        self, CloseWait, Closed, Established, FinWait2, Listen, SynReceived, SynSent,
-    },
+    tcp::state::TcpState::{self, *},
     wire::{
         tcp_header::{TcpFlags, TcpHeader},
         tcp_segment::TcpSegment,
@@ -23,7 +21,7 @@ pub(crate) enum OpenKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SegmentAction {
+pub(crate) enum SegmentAction {
     Drop,
     SendAck,
     SendRst,
@@ -82,14 +80,19 @@ pub(crate) struct Tcb {
 }
 
 impl Tcb {
-    pub(crate) fn new(key: &TcbKey, iss: SequenceNumber) -> Self {
-        // todo: remote{addr,port} will change based on active or passive connection
+    pub(crate) fn new(
+        local_addr: Ipv4Addr,
+        local_port: u16,
+        remote_addr: Ipv4Addr,
+        remote_port: u16,
+        iss: SequenceNumber,
+    ) -> Self {
         Self {
             state: TcpState::Closed,
-            src_addr: key.remote_addr,
-            src_port: key.remote_port,
-            dst_addr: key.local_addr,
-            dst_port: key.local_port,
+            src_addr: remote_addr,
+            src_port: remote_port,
+            dst_addr: local_addr,
+            dst_port: local_port,
             open_kind: OpenKind::Active,
             rand: rand::rng(),
             // todo: see if we can use different value
@@ -99,8 +102,8 @@ impl Tcb {
             rcv_nxt: SequenceNumber(0),
             rcv_up: 0,
             rcv_wnd: 0,
-            snd_nxt: SequenceNumber(0),
-            snd_una: SequenceNumber(0),
+            snd_nxt: iss,
+            snd_una: iss,
             snd_up: 0,
             snd_wl1: SequenceNumber(0),
             snd_wl2: SequenceNumber(0),
@@ -491,6 +494,10 @@ impl Tcb {
             return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
         }
 
+        if ack_action == SegmentAction::SendRst {
+            unimplemented!()
+        }
+
         // do establish related operation now
 
         None
@@ -608,14 +615,13 @@ mod state_machine_tests {
     };
 
     fn make_tcb(state: TcpState) -> Tcb {
-        let key = TcbKey {
-            local_addr: Ipv4Addr::new(10, 0, 0, 1),
-            local_port: 8080,
-            remote_addr: Ipv4Addr::new(10, 0, 0, 2),
-            remote_port: 50000,
-        };
-
-        let mut tcb = Tcb::new(&key, SequenceNumber(100));
+        let mut tcb = Tcb::new(
+            Ipv4Addr::new(10, 0, 0, 1),
+            8080,
+            Ipv4Addr::new(10, 0, 0, 2),
+            50000,
+            SequenceNumber(100),
+        );
         tcb.state = state;
         tcb.snd_una = SequenceNumber(100);
         tcb.snd_nxt = SequenceNumber(101);
