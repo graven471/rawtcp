@@ -31,6 +31,8 @@ impl Device {
 
         handle.add_addr(addr_req)?;
 
+        handle.set_persistent(true)?;
+
         Ok(Self {
             handle,
             addr,
@@ -93,7 +95,7 @@ impl Device {
     }
 
     #[inline]
-    pub fn recv(&mut self, mut buf: impl AsMut<[u8]>) -> Result<usize, Error> {
-        Ok(self.handle.recv(buf.as_mut())?)
+    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        Ok(self.handle.recv(buf)?)
     }
 }

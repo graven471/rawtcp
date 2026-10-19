@@ -46,6 +46,26 @@ const _: () = assert!(
 );
 
 impl Ipv4Header {
+    pub fn new(
+        source: [u8; 4],
+        destination: [u8; 4],
+        total_length: u16,
+        protocol: IpProtocol,
+    ) -> Self {
+        Self {
+            version_ihl: 0x45,
+            dscp_ecn: 0x0,
+            identification: 0,
+            flags_fragment_offset: u16::from(0x4000u16).to_be(),
+            ttl: 64,
+            total_length: total_length.to_be(),
+            protocol: protocol as u8,
+            checksum: 0,
+            ip_source: source,
+            ip_destination: destination,
+        }
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, Ipv4Error> {
         if bytes.len() < IPV4_HEADER_LEN {
             return Err(Ipv4Error::InvalidHeaderLength(bytes.len()));
@@ -76,12 +96,12 @@ impl Ipv4Header {
         Ok(Self {
             version_ihl: version_ihl,
             dscp_ecn: bytes[1],
-            total_length: u16::from_be_bytes([bytes[2], bytes[3]]),
-            identification: u16::from_be_bytes([bytes[4], bytes[5]]),
-            flags_fragment_offset: u16::from_be_bytes([bytes[6], bytes[7]]),
+            total_length: u16::from_be_bytes([bytes[2], bytes[3]]).to_be(),
+            identification: u16::from_be_bytes([bytes[4], bytes[5]]).to_be(),
+            flags_fragment_offset: u16::from_be_bytes([bytes[6], bytes[7]]).to_be(),
             ttl,
             protocol: protocol as u8,
-            checksum: u16::from_be_bytes([bytes[10], bytes[11]]),
+            checksum: u16::from_be_bytes([bytes[10], bytes[11]]).to_be(),
             ip_source: [bytes[12], bytes[13], bytes[14], bytes[15]],
             ip_destination: [bytes[16], bytes[17], bytes[18], bytes[19]],
         })
@@ -89,7 +109,7 @@ impl Ipv4Header {
 
     #[inline]
     pub const fn checksum(&self) -> u16 {
-        self.checksum
+        u16::from_be(self.checksum)
     }
 
     #[inline]
@@ -99,7 +119,7 @@ impl Ipv4Header {
 
     #[inline]
     pub const fn total_length(&self) -> u16 {
-        self.total_length
+        u16::from_be(self.total_length)
     }
 
     #[inline]
@@ -109,7 +129,7 @@ impl Ipv4Header {
 
     #[inline]
     pub const fn identification(&self) -> u16 {
-        self.identification
+        u16::from_be(self.identification)
     }
 
     pub const fn ttl(&self) -> u8 {
@@ -140,19 +160,9 @@ impl Ipv4Header {
 
     // todo: benchmark this can we copy here freely ?
     #[inline]
-    fn calculate_checksum(&self) -> u16 {
-        let mut bytes = [0u8; IPV4_HEADER_LEN];
-
-        bytes[0] = self.version_ihl;
-        bytes[1] = self.dscp_ecn;
-        bytes[2..4].copy_from_slice(&self.total_length.to_be_bytes());
-        bytes[4..6].copy_from_slice(&self.identification.to_be_bytes());
-        bytes[6..8].copy_from_slice(&self.flags_fragment_offset.to_be_bytes());
-        bytes[8] = self.ttl;
-        bytes[9] = self.protocol;
-        // Checksum bytes 10..12 remain zero
-        bytes[12..16].copy_from_slice(&self.ip_source);
-        bytes[16..20].copy_from_slice(&self.ip_destination);
+    pub fn calculate_checksum(&mut self) -> u16 {
+        self.checksum = 0;
+        let bytes = bytemuck::bytes_of(self);
 
         // note: since Self is 20-bytes and 20 is not odd so this will not panic
         // in current scenario
@@ -167,7 +177,11 @@ impl Ipv4Header {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
 
-        !(sum as u16)
+        let checksum = !(sum as u16);
+
+        self.checksum = checksum.to_be();
+
+        checksum
     }
 
     #[inline]

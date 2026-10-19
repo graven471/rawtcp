@@ -40,9 +40,9 @@ impl TcpHeader {
             dst_port: dst_port.to_be(),
             seq_number: seq_num.to_be(),
             ack_number: ack_num.to_be(),
-            data_offset: 0,
+            data_offset: 5 << 4,
             flags: flags.bits(),
-            window_size: 0,
+            window_size: 64240u16.to_be(),
             checksum: 0,
             urgent_pointer: 0,
         }

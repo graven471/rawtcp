@@ -9,3 +9,4 @@ bytemuck = { version = "1.25.2", features = ["aarch64_simd", "derive"] }
 rand = "0.10.3"
 tappers = "0.4.2"
 thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["sync", "rt"] }

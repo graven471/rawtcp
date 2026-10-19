@@ -1,6 +1,7 @@
 #![allow(unused)]
 use std::net::Ipv4Addr;
 
+use rand::RngExt;
 use rand::rngs::ThreadRng;
 
 use crate::tcp::seq::SequenceNumber;
@@ -109,6 +110,11 @@ impl Tcb {
             snd_wl2: SequenceNumber(0),
             snd_wnd: 0,
         }
+    }
+
+    #[inline]
+    pub(crate) fn state(&self) -> TcpState {
+        return self.state;
     }
 
     #[inline]
@@ -271,15 +277,31 @@ impl Tcb {
 
     #[must_use]
     fn handle_listen(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
-        // note: first check sequence number
-        if seg.header.syn() && !seg.header.ack() {
-            // here we are the client the peer sent the SYN we have to
-            // create our own initial seq. number ack the peer syn and
-            // build a  TcpSegment with SYN|ACK flag
-            // transition state to SynReceived
+        if seg.header.rst() {
+            return None;
         }
 
-        todo!()
+        let seg_ack = SequenceNumber(seg.header.ack_number());
+        let seg_seq = SequenceNumber(seg.header.seq_number());
+
+        if seg.header.ack() {
+            return Some(self.send_rst(seg_ack));
+        }
+
+        if seg.header.syn() {
+            self.rcv_nxt = seg_seq + 1;
+            // fixme: this is a time bomb fix it
+            self.iss = SequenceNumber(self.rand.random());
+
+            self.snd_nxt = self.iss + 1;
+            self.snd_una = self.iss;
+
+            self.state = SynReceived;
+
+            return Some(self.send_syn_ack(self.iss, self.rcv_nxt));
+        }
+
+        None
     }
 
     #[must_use]
