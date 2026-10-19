@@ -851,4 +851,171 @@ mod state_machine_tests {
 
         assert_eq!(tcb.state, TcpState::SynReceived);
     }
+
+    #[test]
+    fn syn_sent_establishes_on_valid_syn_ack() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 101, TcpFlags::Syn | TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected final ACK");
+
+        assert!(response.header.ack());
+        assert!(!response.header.syn());
+        assert_eq!(response.header.seq_number(), 101);
+        assert_eq!(response.header.ack_number(), 901);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::Established);
+        assert_eq!(tcb.snd_una, SequenceNumber(101));
+        assert_eq!(tcb.rcv_nxt, SequenceNumber(901));
+        assert_eq!(tcb.irs, SequenceNumber(900));
+    }
+
+    #[test]
+    fn syn_sent_rejects_syn_ack_with_ack_equal_to_iss() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 100, TcpFlags::Syn | TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected RST");
+
+        assert!(response.header.rst());
+        assert_eq!(response.header.seq_number(), 100);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+        assert_eq!(tcb.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_sent_rejects_syn_ack_with_ack_beyond_snd_nxt() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 102, TcpFlags::Syn | TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected RST");
+
+        assert!(response.header.rst());
+        assert_eq!(response.header.seq_number(), 102);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+        assert_eq!(tcb.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_sent_rejects_syn_ack_with_ack_before_iss() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 99, TcpFlags::Syn | TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected RST");
+
+        assert!(response.header.rst());
+        assert_eq!(response.header.seq_number(), 99);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn syn_sent_drops_ack_only_segment() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 101, TcpFlags::Ack);
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+        assert_eq!(tcb.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_sent_drops_rst_without_ack() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(200, 0, TcpFlags::Rst);
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn syn_sent_closes_on_rst_with_valid_ack_and_expected_sequence() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(200, 101, TcpFlags::Rst | TcpFlags::Ack);
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::Closed);
+    }
+
+    #[test]
+    fn syn_sent_drops_rst_with_valid_ack_but_wrong_sequence() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(201, 101, TcpFlags::Rst | TcpFlags::Ack);
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn syn_sent_responds_to_syn_without_ack_with_syn_ack() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 0, TcpFlags::Syn);
+
+        let response = tcb.process(seg).expect("expected SYN-ACK");
+
+        assert!(response.header.syn());
+        assert!(response.header.ack());
+        assert_eq!(response.header.seq_number(), 100);
+        assert_eq!(response.header.ack_number(), 901);
+
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynReceived);
+        assert_eq!(tcb.rcv_nxt, SequenceNumber(901));
+        assert_eq!(tcb.irs, SequenceNumber(900));
+    }
+
+    #[test]
+    fn syn_sent_drops_segment_without_syn_ack_or_rst() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(900, 0, TcpFlags::empty());
+
+        let response = tcb.process(seg);
+
+        assert!(response.is_none());
+        drop(response);
+
+        assert_eq!(tcb.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn syn_sent_syn_ack_sequence_number_wraps_on_receive_next() {
+        let mut tcb = make_tcb(TcpState::SynSent);
+        let seg = segment(u32::MAX, 101, TcpFlags::Syn | TcpFlags::Ack);
+
+        let response = tcb.process(seg).expect("expected final ACK");
+
+        assert_eq!(response.header.ack_number(), 0);
+
+        drop(response);
+
+        assert_eq!(tcb.rcv_nxt, SequenceNumber(0));
+        assert_eq!(tcb.state, TcpState::Established);
+    }
 }

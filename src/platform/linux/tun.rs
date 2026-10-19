@@ -21,7 +21,7 @@ pub struct Device {
 
 impl Device {
     pub fn new() -> Result<Self, Error> {
-        let interface_name = Interface::new("tap0")?;
+        let interface_name = Interface::new("tun0")?;
         let handle = Tun::new_named(interface_name)?;
 
         let addr = Ipv4Addr::new(10, 0, 0, 1);

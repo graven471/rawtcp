@@ -183,15 +183,25 @@ impl Interface {
             let mut buf = [0u8; 124];
             let n = self.device.recv(&mut buf)?;
 
+            if buf[0] >> 4 != 4 {
+                continue;
+            }
+
             let ipv4_hdr = match Ipv4Header::parse(&buf[..n]) {
                 Ok(hdr) => hdr,
-                Err(_) => continue,
+                Err(_) => {
+                    continue;
+                }
             };
 
             let seg = match TcpSegment::parse(&ipv4_hdr, &buf[..n]) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(_) => {
+                    continue;
+                }
             };
+
+            eprintln!("seg_header: {:?}", seg.header);
 
             let key = TcbKey {
                 local_addr: ipv4_hdr.destination(),
@@ -239,5 +249,172 @@ impl Interface {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod handshake {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    #[test]
+    fn three_way_handshake_completes() {
+        let client_ip = Ipv4Addr::new(10, 0, 0, 1);
+        let server_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let client_port = 40000;
+        let server_port = 8080;
+        let client_isn = 100;
+
+        let mut client = Tcb::new(
+            client_ip,
+            client_port,
+            server_ip,
+            server_port,
+            SequenceNumber(client_isn),
+        );
+        client.state = TcpState::SynSent;
+        client.open_kind = OpenKind::Active;
+        client.snd_nxt = SequenceNumber(client_isn + 1);
+
+        let mut server = Tcb::new(
+            server_ip,
+            server_port,
+            client_ip,
+            client_port,
+            SequenceNumber(500),
+        );
+        server.state = TcpState::Listen;
+        server.open_kind = OpenKind::Passive;
+        server.rcv_wnd = 65535;
+
+        // 1. Client -> Server: SYN
+        let syn = TcpSegment::new(
+            TcpHeader::new(client_port, server_port, client_isn, 0, TcpFlags::Syn),
+            &[],
+        );
+
+        // Copy the SYN-ACK header values so the response no longer
+        // borrows the server when we inspect its state.
+        let (syn_ack_seq, syn_ack_ack) = {
+            let response = server.process(syn).expect("server should respond to SYN");
+
+            assert!(response.header.syn());
+            assert!(response.header.ack());
+
+            (response.header.seq_number(), response.header.ack_number())
+        };
+
+        assert_eq!(server.state, TcpState::SynReceived);
+        assert_eq!(syn_ack_ack, client_isn + 1);
+
+        // 2. Server -> Client: SYN-ACK
+        let syn_ack = TcpSegment::new(
+            TcpHeader::new(
+                server_port,
+                client_port,
+                syn_ack_seq,
+                syn_ack_ack,
+                TcpFlags::Syn | TcpFlags::Ack,
+            ),
+            &[],
+        );
+
+        // Copy the final ACK fields before checking client.state.
+        let (final_ack_seq, final_ack_num) = {
+            let response = client
+                .process(syn_ack)
+                .expect("client should respond to SYN-ACK");
+
+            assert!(response.header.ack());
+            assert!(!response.header.syn());
+
+            (response.header.seq_number(), response.header.ack_number())
+        };
+
+        assert_eq!(client.state, TcpState::Established);
+        assert_eq!(final_ack_seq, client_isn + 1);
+        assert_eq!(final_ack_num, syn_ack_seq.wrapping_add(1));
+
+        // 3. Client -> Server: final ACK
+        let final_ack = TcpSegment::new(
+            TcpHeader::new(
+                client_port,
+                server_port,
+                final_ack_seq,
+                final_ack_num,
+                TcpFlags::Ack,
+            ),
+            &[],
+        );
+
+        let response = server.process(final_ack);
+        assert!(response.is_none(), "final ACK should not require a reply");
+        drop(response);
+
+        assert_eq!(server.state, TcpState::Established);
+    }
+
+    #[test]
+    fn syn_sent_rejects_syn_ack_with_ack_beyond_snd_nxt() {
+        let client_ip = Ipv4Addr::new(10, 0, 0, 1);
+        let server_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut client = Tcb::new(client_ip, 40000, server_ip, 8080, SequenceNumber(100));
+        client.state = TcpState::SynSent;
+        client.snd_nxt = SequenceNumber(101);
+
+        // ACK=102 is beyond SND.NXT=101.
+        let syn_ack = TcpSegment::new(
+            TcpHeader::new(8080, 40000, 500, 102, TcpFlags::Syn | TcpFlags::Ack),
+            &[],
+        );
+
+        let (rst, seq_num, ack_num) = {
+            let response = client
+                .process(syn_ack)
+                .expect("invalid SYN-ACK should trigger RST");
+
+            (
+                response.header.rst(),
+                response.header.seq_number(),
+                response.header.ack_number(),
+            )
+        };
+
+        assert!(rst, "response should have the RST flag set");
+        assert_eq!(seq_num, 102);
+        assert_eq!(ack_num, 0);
+        assert_eq!(client.state, TcpState::SynSent);
+        assert_eq!(client.snd_una, SequenceNumber(100));
+    }
+
+    #[test]
+    fn syn_received_rejects_final_ack_beyond_snd_nxt() {
+        let client_ip = Ipv4Addr::new(10, 0, 0, 1);
+        let server_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut server = Tcb::new(server_ip, 8080, client_ip, 40000, SequenceNumber(100));
+        server.state = TcpState::SynReceived;
+        server.snd_una = SequenceNumber(100);
+        server.snd_nxt = SequenceNumber(101);
+        server.rcv_nxt = SequenceNumber(200);
+        server.rcv_wnd = 100;
+
+        // ACK=102 is beyond SND.NXT=101.
+        let final_ack = TcpSegment::new(TcpHeader::new(40000, 8080, 200, 102, TcpFlags::Ack), &[]);
+
+        let (ack, rst) = {
+            let response = server
+                .process(final_ack)
+                .expect("unacceptable ACK should trigger an ACK response");
+
+            (response.header.ack(), response.header.rst())
+        };
+
+        assert!(ack);
+        assert!(!rst);
+        assert_eq!(server.state, TcpState::SynReceived);
+        assert_eq!(server.snd_una, SequenceNumber(100));
     }
 }
