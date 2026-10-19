@@ -200,7 +200,7 @@ impl Tcb {
         ack_num: SequenceNumber,
         flags: TcpFlags,
     ) -> TcpSegment<'_> {
-        let header = TcpHeader::new(self.src_port, self.dst_port, seq_num.0, ack_num.0, flags);
+        let header = TcpHeader::new(self.dst_port, self.src_port, seq_num.0, ack_num.0, flags);
         TcpSegment::new(header, &[])
     }
 

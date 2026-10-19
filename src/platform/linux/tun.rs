@@ -25,13 +25,11 @@ impl Device {
         let handle = Tun::new_named(interface_name)?;
 
         let addr = Ipv4Addr::new(10, 0, 0, 1);
-        let mut addr_req = AddAddressV4::new(addr);
-        addr_req.set_netmask(24);
-        addr_req.set_broadcast(Ipv4Addr::new(10, 100, 0, 255));
-
-        handle.add_addr(addr_req)?;
-
-        handle.set_persistent(true)?;
+        //         let mut addr_req = AddAddressV4::new(addr);
+        //         addr_req.set_netmask(24);
+        //         addr_req.set_broadcast(Ipv4Addr::new(10, 100, 0, 255));
+        //
+        //         handle.add_addr(addr_req)?;
 
         Ok(Self {
             handle,
@@ -45,7 +43,7 @@ impl Device {
         let handle = Tun::new_named(interface_name)?;
 
         let mut addr_req = AddAddressV4::new(options.addr);
-        addr_req.set_netmask(options.netmask);
+        // addr_req.set_netmask(options.netmask);
         addr_req.set_broadcast(options.broadcast);
 
         handle.add_addr(options.addr)?;

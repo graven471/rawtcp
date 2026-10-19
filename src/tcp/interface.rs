@@ -188,20 +188,36 @@ impl Interface {
             }
 
             let ipv4_hdr = match Ipv4Header::parse(&buf[..n]) {
-                Ok(hdr) => hdr,
-                Err(_) => {
+                Ok(hdr) => {
+                    if hdr.protocol() != IpProtocol::Tcp {
+                        continue;
+                    }
+
+                    hdr
+                }
+                Err(e) => {
+                    eprintln!("err: {:?}", e);
                     continue;
                 }
             };
 
             let seg = match TcpSegment::parse(&ipv4_hdr, &buf[..n]) {
                 Ok(s) => s,
-                Err(_) => {
+                Err(e) => {
+                    eprintln!("tcp_err: {:?}", e);
                     continue;
                 }
             };
 
-            eprintln!("seg_header: {:?}", seg.header);
+            eprintln!(
+                "got seg header_info: src port: {}, dst_port: {}, seq_num: {}, syn: {}, ack: {}, rst: {}",
+                seg.header.src_port(),
+                seg.header.dst_port(),
+                seg.header.seq_number(),
+                seg.header.syn(),
+                seg.header.ack(),
+                seg.header.rst()
+            );
 
             let key = TcbKey {
                 local_addr: ipv4_hdr.destination(),
@@ -224,6 +240,16 @@ impl Interface {
             tcb.state = Listen;
 
             if let Some(mut seg) = tcb.process(seg) {
+                eprintln!(
+                    "build seg header_info: src port: {}, dst_port: {}, seq_num: {}, syn: {}, ack: {}, rst: {}",
+                    seg.header.src_port(),
+                    seg.header.dst_port(),
+                    seg.header.seq_number(),
+                    seg.header.syn(),
+                    seg.header.ack(),
+                    seg.header.rst()
+                );
+
                 let mut buf = Vec::new();
                 let mut out_ip = Ipv4Header::new(
                     key.local_addr.octets(),

@@ -4,7 +4,7 @@ use rawtcp::platform::linux::tun::{Device, DeviceOptions};
 use rawtcp::tcp::interface::Interface;
 
 fn main() {
-    let _options = DeviceOptions {
+    let options = DeviceOptions {
         name: "test_tun0",
         addr: Ipv4Addr::new(192, 168, 10, 1),
         netmask: 24,
@@ -12,13 +12,7 @@ fn main() {
     };
 
     let mut device = Device::new().expect("failed to create tun device run with sudo");
-
     device.up().expect("failed to bring up tun device");
-    //
-    //     std::process::Command::new("ip")
-    //         .args(["route", "add", "192.168.10.0/24", "dev", "test_tun0"])
-    //         .status()
-    //         .unwrap();
 
     let mut tcp = Interface::new(device);
 
@@ -26,6 +20,5 @@ fn main() {
     let listen_sock_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 10, 1)), 8080);
 
     tcp.listen(listen_sock_addr).unwrap();
-
     // tcp.connect(sock_addr).unwrap();
 }

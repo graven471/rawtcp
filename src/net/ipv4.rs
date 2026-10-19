@@ -82,7 +82,7 @@ impl Ipv4Header {
         }
 
         // we don't support options for now
-        if ihl != 5 {
+        if ihl < 5 {
             return Err(Ipv4Error::ParseError(
                 "IHL needs to be 5 we don't support options".into(),
             ));
