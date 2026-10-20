@@ -1,23 +1,30 @@
+#![allow(unused)]
+
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
 use rand::RngExt;
+use tokio::task::coop;
 
 use crate::{
     error::{ConnectionError, Error},
     net::ipv4::{IPV4_HEADER_LEN, IpProtocol, Ipv4Header},
     platform::linux::tun::Device,
     tcp::{
-        packet::parse_incoming_packet,
+        connection_key::ConnectionKey,
+        packet::{ParsedTcpPacket, parse_incoming_packet},
         seq::SequenceNumber,
         state::TcpState::{self, *},
-        tcb::{OpenKind, Tcb, TcbKey},
+        tcb::{
+            OpenKind::{self, Passive},
+            Tcb,
+        },
     },
     wire::{
         tcp_header::{TcpFlags, TcpHeader},
-        tcp_segment::TcpSegment,
+        tcp_segment::{OwnedSegment, TcpSegment},
     },
 };
 
@@ -25,7 +32,7 @@ const EPHEMERAL_MIN: u16 = 49152;
 const EPHEMERAL_MAX: u16 = 65535;
 
 pub struct Interface {
-    table: HashMap<TcbKey, Tcb>,
+    table: HashMap<ConnectionKey, Tcb>,
     device: Device,
 }
 
@@ -43,7 +50,7 @@ impl Interface {
         &mut self,
         src: Ipv4Addr,
         dst: Ipv4Addr,
-        segment: &TcpSegment<'_>,
+        segment: &OwnedSegment,
     ) -> Result<(), Error> {
         let total_length =
             IPV4_HEADER_LEN + usize::from(segment.header.offset()) * 4 + segment.payload.len();
@@ -64,7 +71,7 @@ impl Interface {
             segment.header.flags(),
         );
 
-        let mut seg = TcpSegment::new(tcp_header, segment.payload);
+        let mut seg = TcpSegment::new(tcp_header, &segment.payload);
         seg.set_checksum(seg.calculate_checksum(ipv4_hdr.source(), ipv4_hdr.destination()));
 
         // [ipv4_header] [tcp_header] [tcp_options if any] [payload]
@@ -76,7 +83,7 @@ impl Interface {
         packet.extend_from_slice(seg.options);
         packet.extend_from_slice(seg.payload);
 
-        let _ = self.device.send(&packet)?;
+        self.device.send(&packet)?;
 
         return Ok(());
     }
@@ -85,7 +92,7 @@ impl Interface {
     pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error> {
         // generate isn seq. number for now use rand
         // find a dst port
-        // create a table with TcbKey
+        // create a table withConnectionKey
         // send a Syn Packet and transition state to Syn-Sent
         // wait for peer SYN | ACK then validate then send ACK
         // after than unblock the thread and return Ok()
@@ -104,7 +111,7 @@ impl Interface {
         let key = loop {
             let local_port: u16 = rand::rng().random_range(EPHEMERAL_MIN..=EPHEMERAL_MAX);
 
-            let key = TcbKey {
+            let key = ConnectionKey {
                 remote_addr: src_ip,
                 remote_port: src_port,
                 local_addr: self.device.address(),
@@ -186,6 +193,8 @@ impl Interface {
                     IpProtocol::Tcp,
                 );
 
+                let seg = TcpSegment::from(&seg);
+
                 out_ip.calculate_checksum();
                 seg.calculate_checksum(out_ip.source(), out_ip.destination());
 
@@ -203,6 +212,14 @@ impl Interface {
         if tcb.state() == TcpState::Established {
             self.table.insert(key, tcb);
         }
+
+        Ok(())
+    }
+
+    fn handle_incoming_packet(&mut self, packet: ParsedTcpPacket<'_>) -> Result<(), Error> {
+        let conn_key = ConnectionKey::from_packet(&packet);
+        // if connection exists then call tcb.process and send packet
+        // else check if syn is valid then create new tcp, insert it and do process
 
         Ok(())
     }
@@ -228,35 +245,33 @@ impl Interface {
                 continue;
             };
 
-            let key = TcbKey {
-                local_addr: packet.ipv4.destination(),
-                local_port: packet.segment.header.dst_port(),
-                remote_addr: packet.ipv4.source(),
-                remote_port: packet.segment.header.src_port(),
+            // todo: check if key already contains
+            let conn_key = ConnectionKey::from_packet(&packet);
+
+            let response = {
+                let tcb = self.table.get_mut(&conn_key);
+                tcb.and_then(|t| t.process(&packet.segment))
             };
 
-            // check if key already contains
-
-            let mut tcb = Tcb::new(
-                key.local_addr,
-                key.local_port,
-                key.remote_addr,
-                key.remote_port,
-                SequenceNumber(1391),
-            );
-
-            if let Some(tcb) = self.table.get_mut(&key) {
-                // tcb already exists
-            }
-
-            tcb.open_kind = OpenKind::Active;
-            tcb.state = Listen;
-
-            if let Some(seg) = tcb.process(&packet.segment) {
-                self.send_packet(key.local_addr, key.remote_addr, &seg)?;
-
-                if tcb.state() == TcpState::Established {
-                    self.table.insert(key, tcb);
+            if let Some(seg) = response {
+                self.send_packet(conn_key.local_addr, conn_key.remote_addr, &seg)?;
+            } else if packet.segment.header.syn()
+                && !packet.segment.header.ack()
+                && !packet.segment.header.rst()
+            {
+                let mut tcb = Tcb::new(
+                    conn_key.local_addr,
+                    conn_key.local_port,
+                    conn_key.remote_addr,
+                    conn_key.remote_port,
+                    SequenceNumber(1202),
+                );
+                tcb.state = Listen;
+                tcb.open_kind = Passive;
+                let seg = tcb.process(&packet.segment);
+                self.table.insert(conn_key, tcb);
+                if let Some(seg) = seg {
+                    self.send_packet(conn_key.local_addr, conn_key.remote_addr, &seg)?;
                 }
             }
         }

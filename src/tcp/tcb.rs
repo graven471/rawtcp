@@ -10,7 +10,7 @@ use crate::{
     tcp::state::TcpState::{self, *},
     wire::{
         tcp_header::{TcpFlags, TcpHeader},
-        tcp_segment::TcpSegment,
+        tcp_segment::{OwnedSegment, TcpSegment},
     },
 };
 
@@ -27,14 +27,6 @@ pub(crate) enum SegmentAction {
     SendAck,
     SendRst,
     Continue,
-}
-
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TcbKey {
-    pub(crate) local_addr: Ipv4Addr,
-    pub(crate) local_port: u16,
-    pub(crate) remote_addr: Ipv4Addr,
-    pub(crate) remote_port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +94,7 @@ impl Tcb {
             irs: SequenceNumber(0),
             rcv_nxt: SequenceNumber(0),
             rcv_up: 0,
-            rcv_wnd: 0,
+            rcv_wnd: 65535,
             snd_nxt: iss,
             snd_una: iss,
             snd_up: 0,
@@ -199,48 +191,51 @@ impl Tcb {
         seq_num: SequenceNumber,
         ack_num: SequenceNumber,
         flags: TcpFlags,
-    ) -> TcpSegment<'_> {
+    ) -> OwnedSegment {
         let header = TcpHeader::new(self.dst_port, self.src_port, seq_num.0, ack_num.0, flags);
-        TcpSegment::new(header, &[])
+        OwnedSegment {
+            header,
+            options: Vec::new(),
+            payload: Vec::new(),
+        }
     }
 
     #[must_use]
     #[inline]
-    fn send_syn(&self, seq_num: SequenceNumber) -> TcpSegment<'_> {
+    fn send_syn(&self, seq_num: SequenceNumber) -> OwnedSegment {
         self.build_segment(seq_num, SequenceNumber(0), TcpFlags::Syn)
     }
 
     #[must_use]
     #[inline]
-    fn send_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
+    fn send_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> OwnedSegment {
         self.build_segment(seq_num, ack_num, TcpFlags::Ack)
     }
 
     #[must_use]
     #[inline]
-    fn send_syn_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
+    fn send_syn_ack(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> OwnedSegment {
         self.build_segment(seq_num, ack_num, TcpFlags::Syn | TcpFlags::Ack)
     }
 
     #[must_use]
     #[inline]
-    fn send_rst(&self, seq_num: SequenceNumber) -> TcpSegment<'_> {
+    fn send_rst(&self, seq_num: SequenceNumber) -> OwnedSegment {
         self.build_segment(seq_num, SequenceNumber(0), TcpFlags::Rst)
     }
 
     #[must_use]
     #[inline]
-    fn send_fin(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> TcpSegment<'_> {
+    fn send_fin(&self, seq_num: SequenceNumber, ack_num: SequenceNumber) -> OwnedSegment {
         self.build_segment(seq_num, ack_num, TcpFlags::Fin)
     }
 
     #[inline]
-    fn handle_unacceptable_segment(&self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_unacceptable_segment(&self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         if seg.header.rst() {
             return None;
         }
 
-        //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
         return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
     }
 
@@ -251,11 +246,11 @@ impl Tcb {
             return SegmentAction::SendAck;
         }
 
-        if (SequenceNumber(seg.header.ack_number()) <= self.snd_una) {
+        if (SequenceNumber(seg.header.ack_number()) < self.snd_una) {
             return SegmentAction::Drop;
         }
 
-        if (SequenceNumber(seg.header.ack_number()) > self.snd_nxt) {
+        if SequenceNumber(seg.header.ack_number()) > self.snd_nxt {
             return SegmentAction::SendRst;
         }
 
@@ -276,7 +271,7 @@ impl Tcb {
     }
 
     #[must_use]
-    fn handle_listen(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_listen(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         if seg.header.rst() {
             return None;
         }
@@ -305,7 +300,7 @@ impl Tcb {
     }
 
     #[must_use]
-    fn handle_syn_sent(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_syn_sent(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         let seg_ack = SequenceNumber(seg.header.ack_number());
         let seg_seq = SequenceNumber(seg.header.seq_number());
         // todo: i don't quite like the current implementation maybe i should refactor
@@ -382,11 +377,10 @@ impl Tcb {
     }
 
     #[must_use]
-    fn handle_syn_received(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_syn_received(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         let segment_acceptable = self.is_segment_acceptable(&seg);
         let ack_valid = self.is_valid_ack(SequenceNumber(seg.header.ack_number()));
         let seg_ack = SequenceNumber(seg.header.ack_number());
-        let seg_seq = SequenceNumber(seg.header.seq_number());
 
         match (
             segment_acceptable,
@@ -466,18 +460,13 @@ impl Tcb {
                     return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
 
-                // return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 return None;
             }
-
-            _ => unreachable!(),
         }
-
-        return None;
     }
 
     #[must_use]
-    fn handle_established(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_established(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         if !self.is_segment_acceptable(seg) {
             return self.handle_unacceptable_segment(seg);
         }
@@ -504,30 +493,29 @@ impl Tcb {
             return None;
         }
 
-        // todo: check 7 process the segment text
-
-        // it can only return drop, sendAck, or continue
-        let ack_action = self.process_ack(seg);
-
-        if ack_action == SegmentAction::Drop {
-            return None;
+        match self.process_ack(seg) {
+            SegmentAction::Drop => return None,
+            SegmentAction::SendAck => return Some(self.send_ack(self.snd_nxt, self.rcv_nxt)),
+            SegmentAction::SendRst => {
+                return Some(self.send_rst(SequenceNumber(seg.header.ack_number())));
+            }
+            SegmentAction::Continue => {}
         }
 
-        if ack_action == SegmentAction::SendAck {
+        // process payload here congestion control etc
+        eprintln!("{:?}", seg.payload);
+
+        if seg.header.fin() {
+            self.rcv_nxt = self.rcv_nxt + 1;
+            self.state = CloseWait;
             return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
         }
 
-        if ack_action == SegmentAction::SendRst {
-            unimplemented!()
-        }
-
-        // do establish related operation now
-
-        None
+        return None;
     }
 
     #[must_use]
-    fn handle_fin_wait1(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_fin_wait1(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         if !self.is_segment_acceptable(seg) {
             return self.handle_unacceptable_segment(seg);
         }
@@ -582,33 +570,33 @@ impl Tcb {
     }
 
     #[must_use]
-    fn handle_fin_wait2(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_fin_wait2(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         todo!()
     }
 
     #[must_use]
-    fn handle_close_wait(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_close_wait(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         todo!()
     }
 
     #[must_use]
-    fn handle_closing(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_closing(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         todo!()
     }
 
     #[must_use]
-    fn handle_last_ack(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_last_ack(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         todo!()
     }
 
     #[must_use]
-    fn handle_time_wait(&mut self, seg: &TcpSegment<'_>) -> Option<TcpSegment<'_>> {
+    fn handle_time_wait(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         todo!()
     }
 
     /// RFC 9293 state machine
     #[must_use]
-    pub(crate) fn process(&mut self, seg: &TcpSegment) -> Option<TcpSegment<'_>> {
+    pub(crate) fn process(&mut self, seg: &TcpSegment<'_>) -> Option<OwnedSegment> {
         match self.state {
             SynSent => self.handle_syn_sent(&seg),
             SynReceived => self.handle_syn_received(&seg),
@@ -621,7 +609,7 @@ impl Tcb {
             TcpState::LastAck => self.handle_last_ack(&seg),
             TcpState::TimeWait => self.handle_time_wait(&seg),
             TcpState::Closed => {
-                todo!()
+                None
                 // we can enjoy some cookie here
             }
         }
@@ -632,10 +620,7 @@ impl Tcb {
 mod state_machine_tests {
     use super::*;
 
-    use std::{
-        net::Ipv4Addr,
-        panic::{AssertUnwindSafe, catch_unwind},
-    };
+    use std::net::Ipv4Addr;
 
     fn make_tcb(state: TcpState) -> Tcb {
         let mut tcb = Tcb::new(

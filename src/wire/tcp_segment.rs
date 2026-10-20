@@ -18,6 +18,23 @@ pub struct TcpSegment<'a> {
     pub payload: &'a [u8],
 }
 
+#[derive(Debug, Clone)]
+pub struct OwnedSegment {
+    pub header: TcpHeader,
+    pub options: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+impl<'a> From<&'a OwnedSegment> for TcpSegment<'a> {
+    fn from(s: &'a OwnedSegment) -> Self {
+        TcpSegment {
+            header: s.header,
+            options: &s.options,
+            payload: &s.payload,
+        }
+    }
+}
+
 impl<'a> TcpSegment<'a> {
     pub fn new(header: TcpHeader, payload: &'a [u8]) -> Self {
         Self {
@@ -53,19 +70,11 @@ impl<'a> TcpSegment<'a> {
 
         let payload = &tcp_bytes[tcp_header_len..];
 
-        if payload.is_empty() {
-            return Ok(Self {
-                header,
-                options: &tcp_bytes[20..20 + options_len],
-                payload: &[],
-            });
-        }
-
-        Ok(Self {
+        return Ok(Self {
             header,
             options: &tcp_bytes[20..20 + options_len],
             payload,
-        })
+        });
     }
 
     pub fn emit(&self, buf: &mut Vec<u8>) {
