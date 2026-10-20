@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn validate_checksum_accepts_valid_header() {
         let bytes = valid_header_bytes();
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(header.validate_checksum(), Ok(())));
     }
@@ -249,7 +249,7 @@ mod tests {
     fn validate_checksum_rejects_corrupted_ttl() {
         let mut bytes = valid_header_bytes();
         bytes[8] ^= 0x01; // Change TTL without updating checksum.
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(
             header.validate_checksum(),
@@ -261,7 +261,7 @@ mod tests {
     fn validate_checksum_rejects_corrupted_checksum_field() {
         let mut bytes = valid_header_bytes();
         bytes[10] ^= 0x01;
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(
             header.validate_checksum(),
@@ -273,7 +273,7 @@ mod tests {
     fn validate_checksum_rejects_corrupted_source_address() {
         let mut bytes = valid_header_bytes();
         bytes[12] ^= 0x80;
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(
             header.validate_checksum(),
@@ -285,7 +285,7 @@ mod tests {
     fn validate_checksum_rejects_corrupted_total_length() {
         let mut bytes = valid_header_bytes();
         bytes[2] ^= 0x01;
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(
             header.validate_checksum(),
@@ -297,7 +297,7 @@ mod tests {
     fn validate_checksum_rejects_corrupted_flags_and_fragment_offset() {
         let mut bytes = valid_header_bytes();
         bytes[6] ^= 0x20;
-        let mut header = Ipv4Header::parse(&bytes).unwrap();
+        let header = Ipv4Header::parse(&bytes).unwrap();
 
         assert!(matches!(
             header.validate_checksum(),

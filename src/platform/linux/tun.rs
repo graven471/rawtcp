@@ -25,11 +25,11 @@ impl Device {
         let handle = Tun::new_named(interface_name)?;
 
         let addr = Ipv4Addr::new(10, 0, 0, 1);
-        //         let mut addr_req = AddAddressV4::new(addr);
-        //         addr_req.set_netmask(24);
-        //         addr_req.set_broadcast(Ipv4Addr::new(10, 100, 0, 255));
-        //
-        //         handle.add_addr(addr_req)?;
+        let mut addr_req = AddAddressV4::new(addr);
+        addr_req.set_netmask(24);
+        addr_req.set_broadcast(Ipv4Addr::new(10, 100, 0, 255));
+
+        handle.add_addr(addr_req)?;
 
         Ok(Self {
             handle,

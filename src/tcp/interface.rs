@@ -1,21 +1,19 @@
-#![allow(unused)]
-
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
 use rand::RngExt;
-use tokio::sync::oneshot;
 
 use crate::{
     error::{ConnectionError, Error},
-    net::ipv4::{IpProtocol, Ipv4Header},
+    net::ipv4::{IPV4_HEADER_LEN, IpProtocol, Ipv4Header},
     platform::linux::tun::Device,
     tcp::{
+        packet::parse_incoming_packet,
         seq::SequenceNumber,
         state::TcpState::{self, *},
-        tcb::{OpenKind, SegmentAction::Continue, Tcb, TcbKey},
+        tcb::{OpenKind, Tcb, TcbKey},
     },
     wire::{
         tcp_header::{TcpFlags, TcpHeader},
@@ -31,8 +29,6 @@ pub struct Interface {
     device: Device,
 }
 
-unsafe impl Send for Interface {}
-
 impl Interface {
     // todo: support config
     pub fn new(device: Device) -> Self {
@@ -40,6 +36,49 @@ impl Interface {
             table: HashMap::new(),
             device: device,
         }
+    }
+
+    #[must_use]
+    fn send_packet(
+        &mut self,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        segment: &TcpSegment<'_>,
+    ) -> Result<(), Error> {
+        let total_length =
+            IPV4_HEADER_LEN + usize::from(segment.header.offset()) * 4 + segment.payload.len();
+
+        let mut ipv4_hdr = Ipv4Header::new(
+            src.octets(),
+            dst.octets(),
+            total_length as u16,
+            IpProtocol::Tcp,
+        );
+        ipv4_hdr.set_checksum(ipv4_hdr.calculate_checksum());
+
+        let tcp_header = TcpHeader::new(
+            segment.header.src_port(),
+            segment.header.dst_port(),
+            segment.header.seq_number(),
+            segment.header.ack_number(),
+            segment.header.flags(),
+        );
+
+        let mut seg = TcpSegment::new(tcp_header, segment.payload);
+        seg.set_checksum(seg.calculate_checksum(ipv4_hdr.source(), ipv4_hdr.destination()));
+
+        // [ipv4_header] [tcp_header] [tcp_options if any] [payload]
+
+        // todo: i want to avoid copy
+        let mut packet = Vec::with_capacity(total_length);
+        packet.extend_from_slice(bytemuck::bytes_of(&ipv4_hdr));
+        packet.extend_from_slice(bytemuck::bytes_of(&seg.header));
+        packet.extend_from_slice(seg.options);
+        packet.extend_from_slice(seg.payload);
+
+        let _ = self.device.send(&packet)?;
+
+        return Ok(());
     }
 
     // we are the client
@@ -51,7 +90,7 @@ impl Interface {
         // wait for peer SYN | ACK then validate then send ACK
         // after than unblock the thread and return Ok()
 
-        if (!remote.is_ipv4()) {
+        if remote.is_ipv4() {
             return Err(Error::from(ConnectionError::ConnectFailed { remote }));
         }
 
@@ -88,9 +127,7 @@ impl Interface {
             SequenceNumber(isn),
         );
 
-        // [ IPv4 header ] [ TCP header ] [ payload ]
-
-        let mut ipv4_hdr = Ipv4Header::new(
+        let ipv4_hdr = Ipv4Header::new(
             key.local_addr.octets(),
             key.remote_addr.octets(),
             // todo: do not hardcode derive it
@@ -101,10 +138,11 @@ impl Interface {
         let _ = ipv4_hdr.calculate_checksum();
 
         // craft a segment with SYN
-        let mut seg = {
+        let seg = {
             let header = TcpHeader::new(key.local_port, key.remote_port, isn, 0, TcpFlags::Syn);
             TcpSegment {
                 header,
+                options: &[],
                 payload: &[],
             }
         };
@@ -118,11 +156,7 @@ impl Interface {
             buf.extend_from_slice(bytemuck::bytes_of(&seg.header));
             buf.extend_from_slice(seg.payload);
 
-            eprintln!("buf: {:02x?}", &buf);
-
-            eprintln!("sending SYN to {:?}", key);
             let _ = self.device.send(buf)?;
-            eprintln!("SYN sent, waiting for SYN-ACK");
 
             // transition state to SynSent
             tcb.state = SynSent;
@@ -132,24 +166,20 @@ impl Interface {
         loop {
             let mut buf = [0u8; 200];
             let n = self.device.recv(&mut buf)?;
-            let mut ipv4_hdr = match Ipv4Header::parse(&buf[..n]) {
+            let ipv4_hdr = match Ipv4Header::parse(&buf[..n]) {
                 Ok(hdr) => hdr,
                 Err(_) => continue,
             };
 
-            // let _ = ipv4_hdr.calculate_checksum();
-
-            let mut seg = match TcpSegment::parse(&ipv4_hdr, &buf[..n]) {
+            let seg = match TcpSegment::parse(&ipv4_hdr, &buf[..n]) {
                 Ok(seg) => seg,
                 Err(_) => continue,
             };
 
-            // let _ = seg.calculate_checksum(ipv4_hdr.source(), ipv4_hdr.destination());
-
             // valid SYN | ACK packet
-            if let Some(mut seg) = tcb.process(seg) {
+            if let Some(seg) = tcb.process(&seg) {
                 let mut buf = Vec::new();
-                let mut out_ip = Ipv4Header::new(
+                let out_ip = Ipv4Header::new(
                     key.local_addr.octets(),
                     key.remote_addr.octets(),
                     20 + 20,
@@ -178,52 +208,31 @@ impl Interface {
     }
 
     // we are the server
-    pub fn listen(&mut self, local: SocketAddr) -> Result<(), Error> {
+    pub fn listen(&mut self, _local: SocketAddr) -> Result<(), Error> {
         loop {
             let mut buf = [0u8; 124];
             let n = self.device.recv(&mut buf)?;
 
+            // skip non ipv4 packets
             if buf[0] >> 4 != 4 {
                 continue;
             }
 
-            let ipv4_hdr = match Ipv4Header::parse(&buf[..n]) {
-                Ok(hdr) => {
-                    if hdr.protocol() != IpProtocol::Tcp {
-                        continue;
-                    }
+            // skip non-TCP packet
+            if buf[9] != 6 {
+                continue;
+            }
 
-                    hdr
-                }
-                Err(e) => {
-                    eprintln!("err: {:?}", e);
-                    continue;
-                }
+            let Ok(packet) = parse_incoming_packet(&buf[..n]) else {
+                // todo: can we return error for fatal errors and do continue or log it somehow
+                continue;
             };
-
-            let seg = match TcpSegment::parse(&ipv4_hdr, &buf[..n]) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("tcp_err: {:?}", e);
-                    continue;
-                }
-            };
-
-            eprintln!(
-                "got seg header_info: src port: {}, dst_port: {}, seq_num: {}, syn: {}, ack: {}, rst: {}",
-                seg.header.src_port(),
-                seg.header.dst_port(),
-                seg.header.seq_number(),
-                seg.header.syn(),
-                seg.header.ack(),
-                seg.header.rst()
-            );
 
             let key = TcbKey {
-                local_addr: ipv4_hdr.destination(),
-                local_port: seg.header.dst_port(),
-                remote_addr: ipv4_hdr.source(),
-                remote_port: seg.header.src_port(),
+                local_addr: packet.ipv4.destination(),
+                local_port: packet.segment.header.dst_port(),
+                remote_addr: packet.ipv4.source(),
+                remote_port: packet.segment.header.src_port(),
             };
 
             // check if key already contains
@@ -236,45 +245,21 @@ impl Interface {
                 SequenceNumber(1391),
             );
 
+            if let Some(tcb) = self.table.get_mut(&key) {
+                // tcb already exists
+            }
+
             tcb.open_kind = OpenKind::Active;
             tcb.state = Listen;
 
-            if let Some(mut seg) = tcb.process(seg) {
-                eprintln!(
-                    "build seg header_info: src port: {}, dst_port: {}, seq_num: {}, syn: {}, ack: {}, rst: {}",
-                    seg.header.src_port(),
-                    seg.header.dst_port(),
-                    seg.header.seq_number(),
-                    seg.header.syn(),
-                    seg.header.ack(),
-                    seg.header.rst()
-                );
+            if let Some(seg) = tcb.process(&packet.segment) {
+                self.send_packet(key.local_addr, key.remote_addr, &seg)?;
 
-                let mut buf = Vec::new();
-                let mut out_ip = Ipv4Header::new(
-                    key.local_addr.octets(),
-                    key.remote_addr.octets(),
-                    20 + 20,
-                    IpProtocol::Tcp,
-                );
-
-                out_ip.calculate_checksum();
-                seg.calculate_checksum(out_ip.source(), out_ip.destination());
-
-                buf.extend_from_slice(bytemuck::bytes_of(&out_ip));
-                buf.extend_from_slice(bytemuck::bytes_of(&seg.header));
-                buf.extend_from_slice(seg.payload);
-
-                let _ = self.device.send(buf)?;
-                break;
-            }
-
-            if tcb.state() == TcpState::Established {
-                self.table.insert(key, tcb);
+                if tcb.state() == TcpState::Established {
+                    self.table.insert(key, tcb);
+                }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -323,7 +308,7 @@ mod handshake {
         // Copy the SYN-ACK header values so the response no longer
         // borrows the server when we inspect its state.
         let (syn_ack_seq, syn_ack_ack) = {
-            let response = server.process(syn).expect("server should respond to SYN");
+            let response = server.process(&syn).expect("server should respond to SYN");
 
             assert!(response.header.syn());
             assert!(response.header.ack());
@@ -349,7 +334,7 @@ mod handshake {
         // Copy the final ACK fields before checking client.state.
         let (final_ack_seq, final_ack_num) = {
             let response = client
-                .process(syn_ack)
+                .process(&syn_ack)
                 .expect("client should respond to SYN-ACK");
 
             assert!(response.header.ack());
@@ -374,7 +359,7 @@ mod handshake {
             &[],
         );
 
-        let response = server.process(final_ack);
+        let response = server.process(&final_ack);
         assert!(response.is_none(), "final ACK should not require a reply");
         drop(response);
 
@@ -398,7 +383,7 @@ mod handshake {
 
         let (rst, seq_num, ack_num) = {
             let response = client
-                .process(syn_ack)
+                .process(&syn_ack)
                 .expect("invalid SYN-ACK should trigger RST");
 
             (
@@ -432,7 +417,7 @@ mod handshake {
 
         let (ack, rst) = {
             let response = server
-                .process(final_ack)
+                .process(&final_ack)
                 .expect("unacceptable ACK should trigger an ACK response");
 
             (response.header.ack(), response.header.rst())

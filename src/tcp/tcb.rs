@@ -466,6 +466,7 @@ impl Tcb {
                     return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 }
 
+                // return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
                 return None;
             }
 
@@ -607,7 +608,7 @@ impl Tcb {
 
     /// RFC 9293 state machine
     #[must_use]
-    pub(crate) fn process(&mut self, seg: TcpSegment) -> Option<TcpSegment<'_>> {
+    pub(crate) fn process(&mut self, seg: &TcpSegment) -> Option<TcpSegment<'_>> {
         match self.state {
             SynSent => self.handle_syn_sent(&seg),
             SynReceived => self.handle_syn_received(&seg),
@@ -676,7 +677,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::Established);
         let seg = segment(200, 0, TcpFlags::Rst);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         assert!(response.is_none());
         drop(response);
 
@@ -688,7 +689,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(200, 101, TcpFlags::Ack);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         assert_eq!(tcb.state, TcpState::SynSent);
@@ -699,7 +700,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::Established);
         let seg = segment(201, 0, TcpFlags::Rst);
 
-        let response = tcb.process(seg).expect("expected ACK response");
+        let response = tcb.process(&seg).expect("expected ACK response");
 
         let is_ack = response.header.ack();
         let seq = response.header.seq_number();
@@ -718,7 +719,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::FinWait1);
         let seg = segment(200, 101, TcpFlags::Ack);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         assert!(response.is_none());
         drop(response);
 
@@ -731,7 +732,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 0, TcpFlags::Syn);
 
-        let response = tcb.process(seg).expect("expected SYN-ACK response");
+        let response = tcb.process(&seg).expect("expected SYN-ACK response");
 
         assert!(response.header.syn());
         assert!(response.header.ack());
@@ -750,7 +751,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment_with_window(200, 101, TcpFlags::Ack, 4096);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         drop(response);
 
         assert_eq!(tcb.state, TcpState::Established);
@@ -763,7 +764,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment_with_window(200, 101, TcpFlags::Ack | TcpFlags::Fin, 4096);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         drop(response);
 
         assert_eq!(tcb.state, TcpState::CloseWait);
@@ -776,7 +777,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(200, 0, TcpFlags::empty());
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         assert!(response.is_none());
         drop(response);
 
@@ -788,7 +789,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(200, 100, TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected RST response");
+        let response = tcb.process(&seg).expect("expected RST response");
 
         assert!(response.header.rst());
         drop(response);
@@ -802,7 +803,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(200, 102, TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected ACK response");
+        let response = tcb.process(&seg).expect("expected ACK response");
 
         assert!(response.header.ack());
         assert!(!response.header.rst());
@@ -818,7 +819,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(200, 0, TcpFlags::Rst);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         assert!(response.is_none());
         drop(response);
 
@@ -830,7 +831,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(500, 0, TcpFlags::Rst);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
         assert!(response.is_none());
         drop(response);
 
@@ -842,7 +843,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynReceived);
         let seg = segment(200, 0, TcpFlags::Syn);
 
-        let response = tcb.process(seg).expect("expected ACK response");
+        let response = tcb.process(&seg).expect("expected ACK response");
 
         assert!(response.header.ack());
         assert_eq!(response.header.seq_number(), 101);
@@ -857,7 +858,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 101, TcpFlags::Syn | TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected final ACK");
+        let response = tcb.process(&seg).expect("expected final ACK");
 
         assert!(response.header.ack());
         assert!(!response.header.syn());
@@ -877,7 +878,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 100, TcpFlags::Syn | TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected RST");
+        let response = tcb.process(&seg).expect("expected RST");
 
         assert!(response.header.rst());
         assert_eq!(response.header.seq_number(), 100);
@@ -893,7 +894,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 102, TcpFlags::Syn | TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected RST");
+        let response = tcb.process(&seg).expect("expected RST");
 
         assert!(response.header.rst());
         assert_eq!(response.header.seq_number(), 102);
@@ -909,7 +910,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 99, TcpFlags::Syn | TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected RST");
+        let response = tcb.process(&seg).expect("expected RST");
 
         assert!(response.header.rst());
         assert_eq!(response.header.seq_number(), 99);
@@ -924,7 +925,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 101, TcpFlags::Ack);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         drop(response);
@@ -938,7 +939,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(200, 0, TcpFlags::Rst);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         drop(response);
@@ -951,7 +952,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(200, 101, TcpFlags::Rst | TcpFlags::Ack);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         drop(response);
@@ -964,7 +965,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(201, 101, TcpFlags::Rst | TcpFlags::Ack);
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         drop(response);
@@ -977,7 +978,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 0, TcpFlags::Syn);
 
-        let response = tcb.process(seg).expect("expected SYN-ACK");
+        let response = tcb.process(&seg).expect("expected SYN-ACK");
 
         assert!(response.header.syn());
         assert!(response.header.ack());
@@ -996,7 +997,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(900, 0, TcpFlags::empty());
 
-        let response = tcb.process(seg);
+        let response = tcb.process(&seg);
 
         assert!(response.is_none());
         drop(response);
@@ -1009,7 +1010,7 @@ mod state_machine_tests {
         let mut tcb = make_tcb(TcpState::SynSent);
         let seg = segment(u32::MAX, 101, TcpFlags::Syn | TcpFlags::Ack);
 
-        let response = tcb.process(seg).expect("expected final ACK");
+        let response = tcb.process(&seg).expect("expected final ACK");
 
         assert_eq!(response.header.ack_number(), 0);
 

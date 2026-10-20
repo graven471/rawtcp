@@ -132,8 +132,14 @@ impl Ipv4Header {
         u16::from_be(self.identification)
     }
 
+    #[inline]
     pub const fn ttl(&self) -> u8 {
         self.ttl
+    }
+
+    #[inline]
+    pub fn set_checksum(&mut self, checksum: u16) {
+        self.checksum = checksum.to_be();
     }
 
     #[inline]
@@ -158,34 +164,33 @@ impl Ipv4Header {
         unimplemented!()
     }
 
-    // todo: benchmark this can we copy here freely ?
     #[inline]
-    pub fn calculate_checksum(&mut self) -> u16 {
-        self.checksum = 0;
+    pub fn calculate_checksum(&self) -> u16 {
         let bytes = bytemuck::bytes_of(self);
+        let checksum_offset = 10;
 
-        // note: since Self is 20-bytes and 20 is not odd so this will not panic
-        // in current scenario
-        let sum: u32 = bytes
-            .chunks_exact(2)
-            .map(|b| u16::from_be_bytes([b[0], b[1]]) as u32)
-            .sum();
+        let mut sum: u32 = 0;
 
-        let mut sum = sum;
+        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+            let word = if i * 2 == checksum_offset {
+                0
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            };
+
+            sum += u32::from(word);
+        }
 
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
 
-        let checksum = !(sum as u16);
-
-        self.checksum = checksum.to_be();
-
-        checksum
+        return !(sum as u16);
     }
 
     #[inline]
-    pub fn validate_checksum(&mut self) -> Result<(), Ipv4Error> {
+    #[must_use]
+    pub fn validate_checksum(&self) -> Result<(), Ipv4Error> {
         if self.checksum() != self.calculate_checksum() {
             return Err(Ipv4Error::InvalidChecksum);
         }

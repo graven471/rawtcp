@@ -4,7 +4,7 @@ use rawtcp::platform::linux::tun::{Device, DeviceOptions};
 use rawtcp::tcp::interface::Interface;
 
 fn main() {
-    let options = DeviceOptions {
+    let _options = DeviceOptions {
         name: "test_tun0",
         addr: Ipv4Addr::new(192, 168, 10, 1),
         netmask: 24,

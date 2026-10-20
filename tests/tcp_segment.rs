@@ -229,6 +229,7 @@ mod tests {
         let mut segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
 
         let checksum = segment.calculate_checksum(Ipv4Addr::from(SRC_IP), Ipv4Addr::from(DST_IP));
+        segment.set_checksum(checksum);
 
         assert_eq!(segment.header.checksum(), checksum);
         assert_ne!(checksum, 0);
@@ -251,7 +252,7 @@ mod tests {
     fn calculates_checksum_for_even_length_payload() {
         let payload = b"even";
         let (ipv4, bytes) = make_packet(20, 20, payload);
-        let mut segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
+        let segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
 
         let checksum = segment.calculate_checksum(Ipv4Addr::from(SRC_IP), Ipv4Addr::from(DST_IP));
 
@@ -267,7 +268,7 @@ mod tests {
         let payload = b"odd!";
         let odd_payload = &payload[..3];
         let (ipv4, bytes) = make_packet(20, 20, odd_payload);
-        let mut segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
+        let segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
 
         let checksum = segment.calculate_checksum(Ipv4Addr::from(SRC_IP), Ipv4Addr::from(DST_IP));
 
@@ -282,8 +283,8 @@ mod tests {
     fn checksum_changes_when_payload_changes() {
         let (ipv4_a, bytes_a) = make_packet(20, 20, b"alpha");
         let (ipv4_b, bytes_b) = make_packet(20, 20, b"bravo");
-        let mut segment_a = TcpSegment::parse(&ipv4_a, &bytes_a).unwrap();
-        let mut segment_b = TcpSegment::parse(&ipv4_b, &bytes_b).unwrap();
+        let segment_a = TcpSegment::parse(&ipv4_a, &bytes_a).unwrap();
+        let segment_b = TcpSegment::parse(&ipv4_b, &bytes_b).unwrap();
 
         let checksum_a =
             segment_a.calculate_checksum(Ipv4Addr::from(SRC_IP), Ipv4Addr::from(DST_IP));
@@ -303,10 +304,15 @@ mod tests {
             Ipv4Addr::new(192, 168, 1, 10),
             Ipv4Addr::new(192, 168, 1, 20),
         );
+
+        segment_a.set_checksum(checksum_a);
+
         let checksum_b = segment_b.calculate_checksum(
             Ipv4Addr::new(192, 168, 1, 11),
             Ipv4Addr::new(192, 168, 1, 20),
         );
+
+        segment_b.set_checksum(checksum_b);
 
         assert_ne!(checksum_a, checksum_b);
     }
@@ -317,6 +323,7 @@ mod tests {
         let mut segment = TcpSegment::parse(&ipv4, &bytes).unwrap();
 
         let checksum = segment.calculate_checksum(Ipv4Addr::from(SRC_IP), Ipv4Addr::from(DST_IP));
+        segment.set_checksum(checksum);
 
         assert_eq!(&bytes_of(&segment.header)[16..18], &checksum.to_be_bytes());
     }
