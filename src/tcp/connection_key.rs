@@ -23,4 +23,13 @@ impl ConnectionKey {
             remote_port: packet.segment.header.src_port(),
         };
     }
+
+    pub fn bytes(&self) -> [u8; 12] {
+        let mut buf = [0u8; 12];
+        buf[0..4].copy_from_slice(&self.local_addr.octets());
+        buf[4..6].copy_from_slice(&self.local_port.to_le_bytes());
+        buf[6..10].copy_from_slice(&self.remote_addr.octets());
+        buf[10..12].copy_from_slice(&self.remote_port.to_le_bytes());
+        return buf;
+    }
 }

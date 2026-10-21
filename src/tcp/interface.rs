@@ -1,4 +1,4 @@
-#![allow(unused)]
+// #![allow(unused)]
 
 use std::{
     collections::HashMap,
@@ -6,7 +6,6 @@ use std::{
 };
 
 use rand::RngExt;
-use tokio::task::coop;
 
 use crate::{
     error::{ConnectionError, Error},
@@ -14,7 +13,8 @@ use crate::{
     platform::linux::tun::Device,
     tcp::{
         connection_key::ConnectionKey,
-        packet::{ParsedTcpPacket, parse_incoming_packet},
+        isn::generate_isn,
+        packet::parse_incoming_packet,
         seq::SequenceNumber,
         state::TcpState::{self, *},
         tcb::{
@@ -76,7 +76,6 @@ impl Interface {
 
         // [ipv4_header] [tcp_header] [tcp_options if any] [payload]
 
-        // todo: i want to avoid copy
         let mut packet = Vec::with_capacity(total_length);
         packet.extend_from_slice(bytemuck::bytes_of(&ipv4_hdr));
         packet.extend_from_slice(bytemuck::bytes_of(&seg.header));
@@ -216,13 +215,18 @@ impl Interface {
         Ok(())
     }
 
-    fn handle_incoming_packet(&mut self, packet: ParsedTcpPacket<'_>) -> Result<(), Error> {
-        let conn_key = ConnectionKey::from_packet(&packet);
-        // if connection exists then call tcb.process and send packet
-        // else check if syn is valid then create new tcp, insert it and do process
-
-        Ok(())
-    }
+    //     fn handle_incoming_packet(&mut self, packet: ParsedTcpPacket<'_>) -> Result<(), Error> {
+    //         let conn_key = ConnectionKey::from_packet(&packet);
+    //         // if connection exists then call tcb.process and send packet
+    //         // else check if syn is valid then create new tcp, insert it and do process
+    //
+    //         let response = {
+    //             let tcb = self.table.get_mut(&conn_key);
+    //             tcb.and_then(|t| t.process(&packet.segment))
+    //         };
+    //
+    //         Ok(())
+    //     }
 
     // we are the server
     pub fn listen(&mut self, _local: SocketAddr) -> Result<(), Error> {
@@ -241,11 +245,9 @@ impl Interface {
             }
 
             let Ok(packet) = parse_incoming_packet(&buf[..n]) else {
-                // todo: can we return error for fatal errors and do continue or log it somehow
                 continue;
             };
 
-            // todo: check if key already contains
             let conn_key = ConnectionKey::from_packet(&packet);
 
             let response = {
@@ -259,12 +261,15 @@ impl Interface {
                 && !packet.segment.header.ack()
                 && !packet.segment.header.rst()
             {
+                // fixme: generate actual random strong secret
+                let isn = generate_isn(&conn_key.bytes(), &[42u8; 32]);
+
                 let mut tcb = Tcb::new(
                     conn_key.local_addr,
                     conn_key.local_port,
                     conn_key.remote_addr,
                     conn_key.remote_port,
-                    SequenceNumber(1202),
+                    isn,
                 );
                 tcb.state = Listen;
                 tcb.open_kind = Passive;
