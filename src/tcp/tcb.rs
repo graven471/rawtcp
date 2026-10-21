@@ -1,5 +1,6 @@
 #![allow(unused)]
 use std::net::Ipv4Addr;
+use std::ptr::NonNull;
 
 use rand::RngExt;
 use rand::rngs::ThreadRng;
@@ -516,7 +517,7 @@ impl Tcb {
             self.rcv_buffer.extend_from_slice(seg.payload);
             // RFC says When the receiver accepts a segment, it advances RCV.NXT and sends an acknowledgment.
             self.rcv_nxt = self.rcv_nxt + (seg.payload.len() as u32);
-            // eprintln!("{:?}", self.rcv_buffer);
+            eprintln!("{:?}", self.rcv_buffer);
             // do processing here
             return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
         }
