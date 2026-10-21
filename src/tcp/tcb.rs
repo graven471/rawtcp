@@ -69,6 +69,8 @@ pub(crate) struct Tcb {
     pub(crate) rcv_nxt: SequenceNumber,
     pub(crate) rcv_wnd: u16,
     pub(crate) rcv_up: u16,
+    pub(crate) rcv_buffer: Vec<u8>,
+
     pub(crate) irs: SequenceNumber,
 }
 
@@ -93,8 +95,9 @@ impl Tcb {
             iss,
             irs: SequenceNumber(0),
             rcv_nxt: SequenceNumber(0),
-            rcv_up: 0,
             rcv_wnd: 65535,
+            rcv_up: 0,
+            rcv_buffer: Vec::with_capacity(65535),
             snd_nxt: iss,
             snd_una: iss,
             snd_up: 0,
@@ -192,7 +195,14 @@ impl Tcb {
         ack_num: SequenceNumber,
         flags: TcpFlags,
     ) -> OwnedSegment {
-        let header = TcpHeader::new(self.dst_port, self.src_port, seq_num.0, ack_num.0, flags);
+        let header = TcpHeader::new(
+            self.dst_port,
+            self.src_port,
+            seq_num.0,
+            ack_num.0,
+            (65535usize.min(self.rcv_buffer.capacity()) - self.rcv_buffer.len()) as u16,
+            flags,
+        );
         OwnedSegment {
             header,
             options: Vec::new(),
@@ -502,8 +512,14 @@ impl Tcb {
             SegmentAction::Continue => {}
         }
 
-        // process payload here congestion control etc
-        eprintln!("{:?}", seg.payload);
+        if (!seg.payload.is_empty()) {
+            self.rcv_buffer.extend_from_slice(seg.payload);
+            // RFC says When the receiver accepts a segment, it advances RCV.NXT and sends an acknowledgment.
+            self.rcv_nxt = self.rcv_nxt + (seg.payload.len() as u32);
+            // eprintln!("{:?}", self.rcv_buffer);
+            // do processing here
+            return Some(self.send_ack(self.snd_nxt, self.rcv_nxt));
+        }
 
         if seg.header.fin() {
             self.rcv_nxt = self.rcv_nxt + 1;
@@ -647,13 +663,13 @@ mod state_machine_tests {
         flags: TcpFlags,
         window: u16,
     ) -> TcpSegment<'static> {
-        let mut header = TcpHeader::new(50000, 8080, seq, ack, flags);
+        let mut header = TcpHeader::new(50000, 8080, seq, ack, 65535, flags);
         header.set_window(window);
         TcpSegment::new(header, &[])
     }
 
     fn segment(seq: u32, ack: u32, flags: TcpFlags) -> TcpSegment<'static> {
-        let header = TcpHeader::new(50000, 8080, seq, ack, flags);
+        let header = TcpHeader::new(50000, 8080, seq, ack, 65535, flags);
         TcpSegment::new(header, &[])
     }
 

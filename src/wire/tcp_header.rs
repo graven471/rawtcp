@@ -34,7 +34,14 @@ const _: () = assert!(
 );
 
 impl TcpHeader {
-    pub fn new(src_port: u16, dst_port: u16, seq_num: u32, ack_num: u32, flags: TcpFlags) -> Self {
+    pub fn new(
+        src_port: u16,
+        dst_port: u16,
+        seq_num: u32,
+        ack_num: u32,
+        window: u16,
+        flags: TcpFlags,
+    ) -> Self {
         Self {
             src_port: src_port.to_be(),
             dst_port: dst_port.to_be(),
@@ -42,7 +49,7 @@ impl TcpHeader {
             ack_number: ack_num.to_be(),
             data_offset: 5 << 4,
             flags: flags.bits(),
-            window_size: 64240u16.to_be(),
+            window_size: window.to_be(),
             checksum: 0,
             urgent_pointer: 0,
         }

@@ -68,6 +68,7 @@ impl Interface {
             segment.header.dst_port(),
             segment.header.seq_number(),
             segment.header.ack_number(),
+            65535,
             segment.header.flags(),
         );
 
@@ -145,7 +146,14 @@ impl Interface {
 
         // craft a segment with SYN
         let seg = {
-            let header = TcpHeader::new(key.local_port, key.remote_port, isn, 0, TcpFlags::Syn);
+            let header = TcpHeader::new(
+                key.local_port,
+                key.remote_port,
+                isn,
+                0,
+                65535,
+                TcpFlags::Syn,
+            );
             TcpSegment {
                 header,
                 options: &[],
@@ -321,7 +329,14 @@ mod handshake {
 
         // 1. Client -> Server: SYN
         let syn = TcpSegment::new(
-            TcpHeader::new(client_port, server_port, client_isn, 0, TcpFlags::Syn),
+            TcpHeader::new(
+                client_port,
+                server_port,
+                client_isn,
+                0,
+                65535,
+                TcpFlags::Syn,
+            ),
             &[],
         );
 
@@ -346,6 +361,7 @@ mod handshake {
                 client_port,
                 syn_ack_seq,
                 syn_ack_ack,
+                65535,
                 TcpFlags::Syn | TcpFlags::Ack,
             ),
             &[],
@@ -374,6 +390,7 @@ mod handshake {
                 server_port,
                 final_ack_seq,
                 final_ack_num,
+                65535,
                 TcpFlags::Ack,
             ),
             &[],
@@ -397,7 +414,7 @@ mod handshake {
 
         // ACK=102 is beyond SND.NXT=101.
         let syn_ack = TcpSegment::new(
-            TcpHeader::new(8080, 40000, 500, 102, TcpFlags::Syn | TcpFlags::Ack),
+            TcpHeader::new(8080, 40000, 500, 102, 65535, TcpFlags::Syn | TcpFlags::Ack),
             &[],
         );
 
@@ -433,7 +450,10 @@ mod handshake {
         server.rcv_wnd = 100;
 
         // ACK=102 is beyond SND.NXT=101.
-        let final_ack = TcpSegment::new(TcpHeader::new(40000, 8080, 200, 102, TcpFlags::Ack), &[]);
+        let final_ack = TcpSegment::new(
+            TcpHeader::new(40000, 8080, 200, 102, 65535, TcpFlags::Ack),
+            &[],
+        );
 
         let (ack, rst) = {
             let response = server
