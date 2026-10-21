@@ -5,6 +5,7 @@ use std::ptr::NonNull;
 use rand::RngExt;
 use rand::rngs::ThreadRng;
 
+use crate::storage::ring_buffer::RingBuffer;
 use crate::tcp::seq::SequenceNumber;
 
 use crate::{
@@ -30,7 +31,7 @@ pub(crate) enum SegmentAction {
     Continue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Tcb {
     pub(crate) state: TcpState,
 
@@ -70,7 +71,7 @@ pub(crate) struct Tcb {
     pub(crate) rcv_nxt: SequenceNumber,
     pub(crate) rcv_wnd: u16,
     pub(crate) rcv_up: u16,
-    pub(crate) rcv_buffer: Vec<u8>,
+    pub(crate) rcv_buffer: RingBuffer<u8>,
 
     pub(crate) irs: SequenceNumber,
 }
@@ -83,6 +84,9 @@ impl Tcb {
         remote_port: u16,
         iss: SequenceNumber,
     ) -> Self {
+        // fixme: remove this unwrap() i don't wanna do refactor currently
+        let rx = RingBuffer::<u8>::new(65536).unwrap();
+
         Self {
             state: TcpState::Closed,
             src_addr: remote_addr,
@@ -98,7 +102,7 @@ impl Tcb {
             rcv_nxt: SequenceNumber(0),
             rcv_wnd: 65535,
             rcv_up: 0,
-            rcv_buffer: Vec::with_capacity(65535),
+            rcv_buffer: rx,
             snd_nxt: iss,
             snd_una: iss,
             snd_up: 0,
@@ -201,7 +205,7 @@ impl Tcb {
             self.src_port,
             seq_num.0,
             ack_num.0,
-            (65535usize.min(self.rcv_buffer.capacity()) - self.rcv_buffer.len()) as u16,
+            (self.rcv_buffer.capacity() - self.rcv_buffer.len()) as u16,
             flags,
         );
         OwnedSegment {
@@ -514,7 +518,7 @@ impl Tcb {
         }
 
         if (!seg.payload.is_empty()) {
-            self.rcv_buffer.extend_from_slice(seg.payload);
+            self.rcv_buffer.try_enqueue_slice(seg.payload);
             // RFC says When the receiver accepts a segment, it advances RCV.NXT and sends an acknowledgment.
             self.rcv_nxt = self.rcv_nxt + (seg.payload.len() as u32);
             eprintln!("{:?}", self.rcv_buffer);
